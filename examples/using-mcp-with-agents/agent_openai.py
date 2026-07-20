@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """OpenAI agent that retrieves enterprise data over MCP. Self-contained: run it directly.
 
-Connects a real MCP server — `--server atlassian` (default, `mcp-atlassian` in Docker) or
-`--server notion` (official `notion-mcp-server` via npx) — pointed at a `--url` mock if given
-(and reachable), else a local one it spins up, to the OpenAI Agents SDK. Retrieval is ACL-scoped
-by the token (default: the mock's admin token; pass `--token` a per-user token to scope it). The
+Connects a real MCP server — `--server atlassian` (`mcp-atlassian` in Docker) or `--server notion`
+(official `notion-mcp-server` via npx) — pointed at a `--url` mock if given (and reachable), else a
+local one it spins up, to the OpenAI Agents SDK. `--server` is required. Retrieval is ACL-scoped by
+the token (default: the mock's admin token; pass `--token` a per-user token to scope it). The
 backend's corpus + question live in `_servers.py`.
 
 Prereqs: OPENAI_API_KEY set; pip install -e ".[mcp]"; Docker (atlassian) or Node/npx (notion).
 Run from the repo root:
-    python examples/using-mcp-with-agents/agent_openai.py [--server notion] [--url http://localhost:8000]
+    python examples/using-mcp-with-agents/agent_openai.py --server notion [--url http://localhost:8000]
 """
 from __future__ import annotations
 

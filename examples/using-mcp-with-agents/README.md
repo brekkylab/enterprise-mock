@@ -4,12 +4,12 @@ Drive an LLM agent that retrieves corpus data through a **real MCP server** poin
 mock, with retrieval **ACL-scoped** by the token you give it. Two servers are wired up:
 
 - **Atlassian** (Jira + Confluence) via the community-official
-  [`mcp-atlassian`](https://github.com/sooperset/mcp-atlassian) (Docker) — the default.
+  [`mcp-atlassian`](https://github.com/sooperset/mcp-atlassian) (Docker).
 - **Notion** via the **official**
   [`@notionhq/notion-mcp-server`](https://github.com/makenotion/notion-mcp-server) (npx/Node) —
   it takes a first-class `BASE_URL` override, so pointing it at the mock is one env var.
 
-Pick one with `--server {atlassian,notion}` (default `atlassian`).
+Pick one with `--server {atlassian,notion}` — **required** (there is no default).
 
 | File | What it is |
 |---|---|
@@ -35,9 +35,9 @@ python -m pytest tests/test_mcp.py
 #   Atlassian: admin reads an ACL-restricted Jira issue, a user token is blocked
 #   Notion:    admin reads an ACL-restricted page, an outsider is blocked
 
-# drive it with an LLM agent (needs an API key). --server notion uses the Notion MCP server.
+# drive it with an LLM agent (needs an API key). --server is required (atlassian | notion).
 OPENAI_API_KEY=…    python examples/using-mcp-with-agents/agent_openai.py --server notion
-ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/agent_anthropic.py --server notion
+ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/agent_anthropic.py --server atlassian
 ```
 
 Each agent spins up its own small mock by default, or pass `--url` to use an already-running one

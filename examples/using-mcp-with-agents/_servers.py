@@ -120,8 +120,11 @@ BACKENDS = {
 
 
 def select(name: str | None) -> Backend:
-    """Resolve a ``--server`` value to a Backend (default: atlassian)."""
-    name = (name or "atlassian").lower()
+    """Resolve a ``--server`` value to a Backend. ``--server`` is required — there is no default."""
+    if not name:
+        sys.exit(f"--server is required; choose one of {sorted(BACKENDS)} "
+                 "(e.g. --server notion)")
+    name = name.lower()
     if name not in BACKENDS:
         sys.exit(f"--server must be one of {sorted(BACKENDS)}, got {name!r}")
     return BACKENDS[name]
