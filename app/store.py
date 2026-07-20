@@ -31,6 +31,7 @@ SOURCE_TABLE = {
     "github": "github_items",
     "jira": "jira_issues",
     "confluence": "confluence_pages",
+    "notion": "notion_pages",
 }
 
 
@@ -46,6 +47,7 @@ COMMENT_TABLE = {
     "jira": "jira_comments",
     "confluence": "confluence_comments",
     "github": "github_comments",
+    "notion": "notion_comments",
 }
 
 
@@ -63,6 +65,7 @@ GROUPING = {
     "github": ("github_repos", "repo"),
     "jira": ("jira_projects", "project"),
     "confluence": ("confluence_spaces", "space"),
+    "notion": ("notion_teamspaces", "teamspace"),
 }
 
 
@@ -161,6 +164,22 @@ CREATE TABLE IF NOT EXISTS github_comments (
 );
 CREATE INDEX IF NOT EXISTS idx_github_comments_doc ON github_comments(doc_id);
 
+CREATE TABLE IF NOT EXISTS notion_comments (
+    id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, seq INTEGER NOT NULL,
+    author_email TEXT, body TEXT NOT NULL, created_ts INTEGER NOT NULL, reactions TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_notion_comments_doc ON notion_comments(doc_id);
+
+-- ── Notion: pages + databases share one table (subtype), rows are pages parented to a database ──
+CREATE TABLE IF NOT EXISTS notion_pages (
+    doc_id TEXT PRIMARY KEY, teamspace TEXT NOT NULL, author_email TEXT NOT NULL,
+    title TEXT NOT NULL, content TEXT NOT NULL,
+    subtype TEXT, parent_id TEXT, properties TEXT, icon TEXT, cover TEXT,
+    created_ts INTEGER NOT NULL, updated_ts INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_notion_teamspace ON notion_pages(teamspace);
+CREATE INDEX IF NOT EXISTS idx_notion_parent ON notion_pages(parent_id);
+
 -- ── shared relationship tables (keyed by doc_id / names) ──
 -- ── per-service grouping tables (name of the grouping unit + its owning ACL group) ──
 CREATE TABLE IF NOT EXISTS slack_channels    (channel TEXT PRIMARY KEY, group_id TEXT);
@@ -169,6 +188,7 @@ CREATE TABLE IF NOT EXISTS gdrive_folders    (folder  TEXT PRIMARY KEY, group_id
 CREATE TABLE IF NOT EXISTS github_repos      (repo    TEXT PRIMARY KEY, group_id TEXT);
 CREATE TABLE IF NOT EXISTS jira_projects     (project TEXT PRIMARY KEY, group_id TEXT);
 CREATE TABLE IF NOT EXISTS confluence_spaces (space   TEXT PRIMARY KEY, group_id TEXT);
+CREATE TABLE IF NOT EXISTS notion_teamspaces (teamspace TEXT PRIMARY KEY, group_id TEXT);
 
 CREATE TABLE IF NOT EXISTS principals (
     id TEXT PRIMARY KEY, type TEXT NOT NULL, display_name TEXT, email TEXT
