@@ -40,3 +40,20 @@ def test_time_formats():
 def test_account_id_and_login():
     assert synth.atlassian_account_id("ava.chen@x.com").startswith("5b")
     assert synth.github_login("ava.chen@x.com") == "ava-chen"
+
+
+def test_notion_id_is_stable_uuid():
+    assert synth.notion_id("n-page") == synth.notion_id("n-page")
+    assert synth.notion_id("n-page") != synth.notion_id("n-other")
+    a = synth.notion_id("n-page")
+    assert len(a) == 36 and a.count("-") == 4
+
+
+def test_notion_blocks_roundtrip_content_verbatim():
+    content = "# Title\n\nA paragraph.\n\n- one\n- two"
+    blocks = synth.notion_blocks("n-page", content)
+    assert blocks and all(b["object"] == "block" and "id" in b for b in blocks)
+    assert synth.notion_blocks_to_text(blocks) == content
+    # block ids are deterministic and per-position
+    assert blocks[0]["id"] == synth.notion_block_id("n-page", 0)
+    assert blocks[0]["type"] == "heading_1"

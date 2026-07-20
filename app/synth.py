@@ -176,3 +176,82 @@ def jira_project_key(container: str) -> str:
 def confluence_space_key(container: str) -> str:
     return _key(container, "SPACE")
 
+
+# --- Notion --------------------------------------------------------------------
+# Notion ids are dashed UUIDs; every page/block/database/data-source/user id is a
+# deterministic UUID derived from a namespaced seed. Content is materialized into the
+# Notion block tree by notion_blocks() and losslessly recovered by notion_blocks_to_text().
+
+def _uuid_from(seed: str) -> str:
+    h = _digest(seed)
+    return f"{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
+
+
+def notion_id(doc_id: str) -> str:
+    """Stable dashed-UUID page/database id keyed on the doc_id (reversible via the app index)."""
+    return _uuid_from("notion:" + doc_id)
+
+
+def notion_block_id(doc_id: str, seq: int) -> str:
+    return _uuid_from(f"notion-block:{doc_id}:{seq}")
+
+
+def notion_user_id(email: str) -> str:
+    return _uuid_from("notion-user:" + email)
+
+
+def notion_data_source_id(db_doc_id: str) -> str:
+    """The (single) data source id for a database — the 2025-09-03 model's query target."""
+    return _uuid_from("notion-ds:" + db_doc_id)
+
+
+def notion_rich_text(text: str) -> list[dict]:
+    """A single-run Notion rich_text array carrying ``text`` verbatim as its plain_text."""
+    return [{"type": "text", "text": {"content": text, "link": None},
+             "annotations": {"bold": False, "italic": False, "strikethrough": False,
+                             "underline": False, "code": False, "color": "default"},
+             "plain_text": text, "href": None}]
+
+
+# Line prefix each block type carries, so notion_blocks_to_text inverts notion_blocks exactly.
+_NOTION_PREFIX = {"heading_1": "# ", "heading_2": "## ", "heading_3": "### ",
+                  "bulleted_list_item": "- ", "numbered_list_item": "1. ", "paragraph": ""}
+
+
+def notion_blocks(doc_id: str, content: str) -> list[dict]:
+    """Parse ``content`` into Notion block objects, one per line.
+
+    Recognizes ``#``/``##``/``###`` headings, ``-``/``*`` bullets, ``N.`` numbered items;
+    everything else (incl. blank lines) is a paragraph. Round-trips verbatim for the heading/
+    bullet/paragraph forms via :func:`notion_blocks_to_text` (numbered items normalize to ``1. ``,
+    as Notion itself does not store the ordinal)."""
+    blocks: list[dict] = []
+    for i, line in enumerate(content.split("\n")):
+        btype, payload = "paragraph", line
+        if line.startswith("### "):
+            btype, payload = "heading_3", line[4:]
+        elif line.startswith("## "):
+            btype, payload = "heading_2", line[3:]
+        elif line.startswith("# "):
+            btype, payload = "heading_1", line[2:]
+        elif line[:2] in ("- ", "* "):
+            btype, payload = "bulleted_list_item", line[2:]
+        elif re.match(r"^\d+\. ", line):
+            btype, payload = "numbered_list_item", re.sub(r"^\d+\. ", "", line)
+        blocks.append({
+            "object": "block", "id": notion_block_id(doc_id, i),
+            "type": btype, "has_children": False, "archived": False, "in_trash": False,
+            btype: {"rich_text": notion_rich_text(payload), "color": "default"},
+        })
+    return blocks
+
+
+def notion_blocks_to_text(blocks: list[dict]) -> str:
+    """Recover the flat text from a block list (inverse of :func:`notion_blocks`)."""
+    out = []
+    for b in blocks:
+        t = b["type"]
+        text = "".join(rt["plain_text"] for rt in b[t].get("rich_text", []))
+        out.append(_NOTION_PREFIX.get(t, "") + text)
+    return "\n".join(out)
+
