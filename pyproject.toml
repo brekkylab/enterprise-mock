@@ -13,7 +13,7 @@ license-files = ["LICENSE"]
 authors = [
     { name = "khj809", email = "onsealeatang@gmail.com" },
 ]
-keywords = ["mock", "rag", "enterprise-search", "slack", "gmail", "google-drive", "jira", "confluence", "github", "benchmark"]
+keywords = ["mock", "rag", "enterprise-search", "slack", "gmail", "google-drive", "jira", "confluence", "github", "notion", "benchmark"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",

@@ -11,6 +11,7 @@ truth** for the JSONL record that `app/importer/byo.py` accepts:
 | `github.schema.json` | `github` | `repo` |
 | `jira.schema.json` | `jira` | `project` |
 | `confluence.schema.json` | `confluence` | `space` |
+| `notion.schema.json` | `notion` | `teamspace` |
 
 Edit these files directly to change the accepted record shape. `app/validation.py`
 loads them at runtime (keyed by each schema's `properties.source_type.const`), so a new source
@@ -63,9 +64,10 @@ python -m app.importer.byo generated.jsonl --dry-run && python -m app.importer.b
 
 - **Strict** — `source_type` (const), required `content` (+ `title` for every source except
   Slack), the `visibility` enum, per-service `subtype` enums (e.g. github `issue|pull_request`,
-  drive `document|spreadsheet|presentation|pdf`, confluence `page|blogpost`), comment/reply
-  object shapes, and `additionalProperties: false` (an unknown top-level key is almost always a
-  typo). `comments` are allowed only on jira/confluence/github; `replies` only on slack.
+  drive `document|spreadsheet|presentation|pdf`, confluence `page|blogpost`, notion
+  `page|database`), comment/reply object shapes, and `additionalProperties: false` (an unknown
+  top-level key is almost always a typo). `comments` are allowed on jira/confluence/github/notion;
+  `replies` only on slack.
 - **Permissive** — the free-form `meta` object and the loosely typed per-service extras
   (`reactions`, `attachments`, `issuelinks`, `reviews`, `changelog`, …), which the loader stores
   as JSON without a fixed shape.
@@ -77,5 +79,6 @@ python -m app.importer.byo generated.jsonl --dry-run && python -m app.importer.b
   gmail `html`; drive `trashed`; github `closed_at`/`closed_by`/`merged_by`/`milestone`/
   `requested_reviewers` (+ comment `reactions`); jira `assignee`/`reporter`/`resolution`/
   `resolutiondate`/`duedate`/`fix_versions`; confluence `version_number`/`version_message`/
-  `minor_edit`. These map to the fields the real vendor APIs return; everything else on each
-  response is synthesized deterministically from the `doc_id`.
+  `minor_edit`; notion `properties` (database schema / row values), `icon`, `cover` (+ `subtype`
+  `page|database`, `parent` for database rows). These map to the fields the real vendor APIs
+  return; everything else on each response is synthesized deterministically from the `doc_id`.
