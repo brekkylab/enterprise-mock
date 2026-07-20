@@ -111,6 +111,26 @@ SAMPLE = [
      "title": "Security Whitepaper.pdf", "content": "%PDF-1.7 placeholder.", "author_email": "sec@acme.com",
      "author_groups": ["security-compliance"], "visibility": "public", "subtype": "pdf",
      "meta": {"mime_type": "application/pdf"}},
+
+    {"source_type": "notion", "doc_id": "nt-runbook", "teamspace": "engineering",
+     "group": "engineering", "title": "Notion On-call Runbook",
+     "content": "# On-call\n\nCheck dashboards, roll back, page on-call.",
+     "author_email": "ava@acme.com", "author_groups": ["engineering"], "visibility": "public",
+     "icon": "📟",
+     "comments": [{"content": "add rate-limiter step", "author_email": "bob@acme.com"}]},
+    {"source_type": "notion", "doc_id": "nt-tasks-db", "subtype": "database",
+     "teamspace": "engineering", "group": "engineering", "title": "Eng Tasks",
+     "content": "Team task tracker.", "author_email": "ava@acme.com",
+     "author_groups": ["engineering"], "visibility": "public",
+     "properties": {"Status": {"type": "select"}, "Priority": {"type": "select"}}},
+    {"source_type": "notion", "doc_id": "nt-task-1", "parent": "nt-tasks-db",
+     "teamspace": "engineering", "group": "engineering", "title": "Fix gateway 502s",
+     "content": "Investigate token-bucket refill.", "author_email": "bob@acme.com",
+     "author_groups": ["engineering"], "visibility": "public",
+     "properties": {"Status": "In Progress", "Priority": "High"}},
+    {"source_type": "notion", "doc_id": "nt-secret", "teamspace": "people-ops",
+     "group": "people", "title": "Comp planning notes", "content": "Confidential.",
+     "author_email": "hana@acme.com", "author_groups": ["people"], "visibility": "group"},
 ]
 
 

@@ -422,3 +422,106 @@ def test_user_cannot_fetch_others_private_gmail(client, tokens, admin_h, ro_conn
     # A may coincidentally be a recipient; assert admin can always read it
     assert client.get(f"/gmail/v1/users/me/messages/{doc['doc_id']}", headers=admin_h).status_code == 200
     assert r.status_code in (200, 404)
+
+
+# --------------------------------------------------------------------------- Notion
+
+def _tok(tokens, email):
+    return next(u["token"] for u in tokens["users"] if u["email"] == email)
+
+
+def test_notion_page_retrieve_and_blocks(client, admin_h):
+    from app import synth
+    pid = synth.notion_id("nt-runbook")
+    r = client.get(f"/notion/v1/pages/{pid}", headers=admin_h)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["object"] == "page" and body["id"] == pid
+    assert body["properties"]["title"]["title"][0]["plain_text"] == "Notion On-call Runbook"
+    assert body["icon"] == {"type": "emoji", "emoji": "📟"}
+    ch = client.get(f"/notion/v1/blocks/{pid}/children", headers=admin_h).json()
+    text = synth.notion_blocks_to_text(ch["results"])
+    assert text == "# On-call\n\nCheck dashboards, roll back, page on-call."
+
+
+def test_notion_dashless_id_resolves(client, admin_h):
+    from app import synth
+    pid = synth.notion_id("nt-runbook").replace("-", "")
+    assert client.get(f"/notion/v1/pages/{pid}", headers=admin_h).status_code == 200
+
+
+def test_notion_search_and_comments(client, admin_h):
+    from app import synth
+    s = client.post("/notion/v1/search", json={"query": "on-call"}, headers=admin_h).json()
+    assert any(r["id"] == synth.notion_id("nt-runbook") for r in s["results"])
+    c = client.get("/notion/v1/comments", params={"block_id": synth.notion_id("nt-runbook")},
+                   headers=admin_h).json()
+    assert c["results"][0]["rich_text"][0]["plain_text"] == "add rate-limiter step"
+    assert c["results"][0]["object"] == "comment"
+
+
+def test_notion_search_filter_database_only(client, admin_h):
+    from app import synth
+    s = client.post("/notion/v1/search",
+                    json={"query": "", "filter": {"property": "object", "value": "database"}},
+                    headers=admin_h).json()
+    assert s["results"] and all(r["object"] == "database" for r in s["results"])
+    assert any(r["id"] == synth.notion_id("nt-tasks-db") for r in s["results"])
+
+
+def test_notion_users(client, admin_h):
+    me = client.get("/notion/v1/users/me", headers=admin_h).json()
+    assert me["object"] == "user" and me["type"] == "bot"
+    lst = client.get("/notion/v1/users", headers=admin_h).json()
+    assert lst["results"] and all(u["object"] == "user" for u in lst["results"])
+    uid = lst["results"][0]["id"]
+    assert client.get(f"/notion/v1/users/{uid}", headers=admin_h).json()["id"] == uid
+
+
+def test_notion_unauth_is_401(client):
+    from app import synth
+    r = client.get(f"/notion/v1/pages/{synth.notion_id('nt-runbook')}")
+    assert r.status_code == 401 and r.json()["code"] == "unauthorized"
+
+
+def test_notion_acl_hides_group_doc_from_outsider(client, tokens):
+    from app import synth
+    pid = synth.notion_id("nt-secret")
+    outsider = _tok(tokens, "ava@acme.com")  # ava is engineering, not people
+    r = client.get(f"/notion/v1/pages/{pid}", headers={"Authorization": f"Bearer {outsider}"})
+    assert r.status_code == 404 and r.json()["code"] == "object_not_found"
+    # the owner (hana, in people) can see it
+    owner = _tok(tokens, "hana@acme.com")
+    assert client.get(f"/notion/v1/pages/{pid}",
+                      headers={"Authorization": f"Bearer {owner}"}).status_code == 200
+
+
+def test_notion_database_new_vs_legacy_shape(client, admin_h):
+    from app import synth
+    did = synth.notion_id("nt-tasks-db")
+    new = client.get(f"/notion/v1/databases/{did}", headers=admin_h).json()
+    assert new["object"] == "database"
+    assert new["data_sources"][0]["id"] == synth.notion_data_source_id("nt-tasks-db")
+    assert "properties" not in new
+    legacy = client.get(f"/notion/v1/databases/{did}",
+                        headers={**admin_h, "Notion-Version": "2022-06-28"}).json()
+    assert "properties" in legacy and "Status" in legacy["properties"]
+    assert "data_sources" not in legacy
+
+
+def test_notion_query_rows_both_paths(client, admin_h):
+    from app import synth
+    did = synth.notion_id("nt-tasks-db")
+    dsid = synth.notion_data_source_id("nt-tasks-db")
+    rows_new = client.post(f"/notion/v1/data_sources/{dsid}/query", json={}, headers=admin_h).json()
+    assert any(r["id"] == synth.notion_id("nt-task-1") for r in rows_new["results"])
+    rows_legacy = client.post(f"/notion/v1/databases/{did}/query", json={},
+                              headers={**admin_h, "Notion-Version": "2022-06-28"}).json()
+    assert any(r["id"] == synth.notion_id("nt-task-1") for r in rows_legacy["results"])
+
+
+def test_notion_data_source_retrieve(client, admin_h):
+    from app import synth
+    dsid = synth.notion_data_source_id("nt-tasks-db")
+    ds = client.get(f"/notion/v1/data_sources/{dsid}", headers=admin_h).json()
+    assert ds["object"] == "data_source" and "Status" in ds["properties"]
