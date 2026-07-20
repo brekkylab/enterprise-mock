@@ -211,11 +211,39 @@ def confluence():
         lambda: f'{len(cf.get(f"rest/api/content/{child}", params={"expand": "ancestors"})["ancestors"])} ancestors')
 
 
+# ------------------------------------------------------------------ Notion
+def notion():
+    from notion_client import Client
+    from app import synth
+    c = Client(auth=ADMIN, base_url=f"{BASE}/notion")
+    check("Notion", "search")(
+        lambda: f'{len(m)} hits' if (m := c.search(query="on-call")["results"]) else 1 / 0)
+    pid = synth.notion_id("nt-runbook")
+    check("Notion", "pages.retrieve")(lambda: c.pages.retrieve(pid)["object"])
+    blocks = c.blocks.children.list(pid)["results"]
+    check("Notion", "blocks.children.list")(lambda: f"{len(blocks)} blocks" if blocks else 1 / 0)
+    did = synth.notion_id("nt-tasks-db")
+    db = c.databases.retrieve(did)
+    check("Notion", "databases.retrieve")(lambda: db["object"])
+    dsid = db["data_sources"][0]["id"]
+    check("Notion", "data_sources.retrieve")(lambda: c.data_sources.retrieve(dsid)["object"])
+    check("Notion", "data_sources.query")(
+        lambda: f'{len(r)} rows' if (r := c.data_sources.query(data_source_id=dsid)["results"]) else 1 / 0)
+    check("Notion", "users.list")(lambda: f'{len(c.users.list()["results"])} users')
+    check("Notion", "users.me")(lambda: c.users.me()["type"])
+    check("Notion", "comments.list")(
+        lambda: c.comments.list(block_id=pid)["results"][0]["object"])
+
+
 def test_sdk_read_coverage(live_server):
     global BASE, ADMIN
     base, settings = live_server
     BASE, ADMIN = base, settings.admin_token
-    for fn in (slack, gmail, drive, github, jira, confluence, google_oauth):
+    fns = [slack, gmail, drive, github, jira, confluence, google_oauth]
+    import importlib.util
+    if importlib.util.find_spec("notion_client"):  # optional; only when .[examples] is installed
+        fns.append(notion)
+    for fn in fns:
         try:
             fn()
         except Exception as e:  # noqa: BLE001 - a setup failure shouldn't abort the matrix
