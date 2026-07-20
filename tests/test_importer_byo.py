@@ -224,3 +224,43 @@ def test_byo_slack_rich_replies(tmp_path):
     assert rm["reactions"][0]["name"] == "eyes" and rm["subtype"] == "thread_broadcast"
     # reply shares the root's thread_ts
     assert rm["thread_ts"] == _message(root, reply_count=1)["thread_ts"] == _msg_ts(root)
+
+
+def test_notion_byo_load(tmp_path):
+    corpus = _write(tmp_path, [
+        {"source_type": "notion", "teamspace": "eng", "title": "Runbook",
+         "content": "# Heading\n\nBody line.", "doc_id": "n-page",
+         "author_email": "ava@acme.com", "visibility": "public",
+         "icon": "🚀",
+         "comments": [{"content": "nit", "author_email": "bob@acme.com"}]},
+        {"source_type": "notion", "teamspace": "eng", "subtype": "database",
+         "title": "Tasks", "content": "Task tracker", "doc_id": "n-db",
+         "author_email": "ava@acme.com", "visibility": "public",
+         "properties": {"Status": {"type": "select"}}},
+        {"source_type": "notion", "teamspace": "eng", "title": "Fix gateway",
+         "content": "row body", "doc_id": "n-row", "parent": "n-db",
+         "author_email": "ava@acme.com", "visibility": "public",
+         "properties": {"Status": "In Progress"}},
+    ])
+    settings = Settings(data_dir=tmp_path)
+    res = load(corpus, settings)
+    assert res["counts"]["notion"] == 3
+
+    conn = store.connect_ro(settings.db_path)
+    row = store.get_document(conn, "notion", "n-row")
+    assert row["parent_id"] == "n-db" and row["teamspace"] == "eng"
+    assert '"Status"' in row["properties"]
+    db = store.get_document(conn, "notion", "n-db")
+    assert db["subtype"] == "database"
+    page = store.get_document(conn, "notion", "n-page")
+    assert page["icon"] == "🚀"
+    assert len(store.doc_comments(conn, "notion", "n-page")) == 1
+    assert store.get_container(conn, "notion", "eng") is not None
+    conn.close()
+
+
+def test_notion_byo_rejects_bad_subtype():
+    from app.validation import record_errors
+    errs = record_errors({"source_type": "notion", "title": "x", "content": "y",
+                          "subtype": "wiki"})
+    assert any("subtype" in e for e in errs)

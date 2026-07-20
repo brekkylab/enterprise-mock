@@ -1,7 +1,7 @@
 # Enterprise Mock
 
 > **LocalStack for enterprise SaaS knowledge APIs.** Point your RAG/search connectors at
-> read-only mock **Slack, Gmail, Google Drive, GitHub, Jira, and Confluence** APIs — real
+> read-only mock **Slack, Gmail, Google Drive, GitHub, Jira, Confluence, and Notion** APIs — real
 > response shapes, real pagination, real per-document ACLs — entirely offline: no accounts,
 > no OAuth, no rate limits.
 
@@ -9,7 +9,7 @@
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A **read-only** mock server that stands in for six enterprise SaaS knowledge sources at once.
+A **read-only** mock server that stands in for seven enterprise SaaS knowledge sources at once.
 It speaks each service's real read API — the exact response shapes, pagination schemes, auth,
 and native permission endpoints their official SDKs expect — over a corpus **you** supply, so a
 RAG/search connector built on those SDKs can be exercised **end-to-end** without the live
@@ -162,6 +162,9 @@ from google.oauth2.credentials import Credentials
 creds = Credentials(token=TOKEN)
 build("gmail", "v1", credentials=creds, client_options=ClientOptions(api_endpoint="http://localhost:8000"))
 build("drive", "v3", credentials=creds, client_options=ClientOptions(api_endpoint="http://localhost:8000/drive/v3"))
+
+from notion_client import Client
+Client(auth=TOKEN, base_url="http://localhost:8000/notion")   # SDK appends /v1/ itself
 ```
 
 A runnable, self-contained script per service is in [`examples/using-official-sdk/`](examples/using-official-sdk/).
@@ -169,8 +172,12 @@ A runnable, self-contained script per service is in [`examples/using-official-sd
 ## Using MCP with the mock
 
 Point an MCP server at the mock's base URL and an agent retrieves through it — the mock enforces
-the ACL for whatever token the MCP server authenticates with. For example, connecting
-[`mcp-atlassian`](https://github.com/sooperset/mcp-atlassian) over stdio:
+the ACL for whatever token the MCP server authenticates with. Two servers are wired up in the
+examples: the community-official [`mcp-atlassian`](https://github.com/sooperset/mcp-atlassian)
+(Jira + Confluence, over Docker) and the **official**
+[`@notionhq/notion-mcp-server`](https://github.com/makenotion/notion-mcp-server) (Notion, over
+`npx` — it takes a first-class `BASE_URL` override: `BASE_URL=http://localhost:8000/notion`).
+For example, connecting `mcp-atlassian` over stdio:
 
 ```python
 from mcp import ClientSession, StdioServerParameters
@@ -195,10 +202,10 @@ Runnable agents (Anthropic + OpenAI) and setup notes are in [`examples/using-mcp
 ## Using mirage with the mock
 
 [mirage](https://github.com/strukto-ai/mirage) mounts a SaaS backend as a **virtual
-filesystem** an agent reads with bash (`ls`, `cat`, `grep`, `find`). Point its Slack/Gmail/Drive
-resources at the mock and you can drive a mirage agent over your corpus offline. mirage has no
-`base_url` option (it hardcodes `slack.com`/`googleapis.com`), so a one-line helper redirects
-those constants at the mock:
+filesystem** an agent reads with bash (`ls`, `cat`, `grep`, `find`). Point its
+Slack/Gmail/Drive/Notion resources at the mock and you can drive a mirage agent over your corpus
+offline. Slack and Notion expose a `base_url` config (point them straight at the mock); Google
+hardcodes `googleapis.com`, so a one-line helper redirects those constants at the mock:
 
 ```python
 from mirage import MountMode, Workspace
@@ -210,8 +217,8 @@ ws = Workspace({"/slack": SlackResource(SlackConfig(token=TOKEN))}, mode=MountMo
 await ws.execute("ls /slack/channels/")         # then cat a channel's dated chat.jsonl
 ```
 
-One runnable script per provider (Slack, Gmail, Drive) plus a `unified.py` that greps across all
-three at once are in [`examples/using-mirage/`](examples/using-mirage/); add `--fuse` to expose a
+One runnable script per provider (Slack, Gmail, Drive, Notion) plus a `unified.py` that greps
+across Slack/Gmail/Drive at once are in [`examples/using-mirage/`](examples/using-mirage/); add `--fuse` to expose a
 mount as a real OS filesystem (macFUSE/fuse3) that any tool can `cat`/`grep`. (Jira/Confluence
 and GitHub are out of scope — mirage has no Jira/Confluence connector, and its GitHub connector
 mirrors a repo's source-file tree rather than the issues/PRs the mock serves.)
@@ -227,6 +234,7 @@ mirrors a repo's source-file tree rather than the issues/PRs the mock serves.)
 | `/github` | GitHub | `search/issues` (`q`: free text + `repo:` `is:` `state:` `type:` `label:` `author:`), `orgs/{org}`, `orgs/{org}/repos`, `repos/{o}/{r}`, `.../issues[/{n}]`, `.../issues/{n}/comments`, `.../pulls[/{n}]`, `.../pulls/{n}/reviews`, `.../readme`, `.../collaborators`, `.../teams`, `orgs/{org}/teams` |
 | `/atlassian/rest/api/3` | Jira | `search/jql` (JQL `project =`, `text\|summary\|description ~`), `issue/{key}`, `issue/{key}/comment`, `field`, `issueLinkType`, `project/search`, `project/{key}/role[/{id}]` |
 | `/atlassian/wiki/rest/api` | Confluence | `content`, `content/{id}`, `content/{id}/restriction/byOperation`, `space`, `space/{key}/permission` |
+| `/notion/v1` | Notion | `search`, `pages/{id}`, `blocks/{id}`, `blocks/{id}/children`, `databases/{id}` (version-aware), `data_sources/{id}`, `data_sources/{id}/query`, `databases/{id}/query` (legacy), `users[/{id}]`, `users/me`, `comments` |
 
 ## Tests
 
@@ -254,4 +262,7 @@ follow the org (`<org>.atlassian.net`, and the owner echoed from the request pat
 - Google Drive doc type comes from a record's `subtype`
   (`document|spreadsheet|presentation|pdf`); unset, a document serves as a Google Doc
   (`text/plain` export).
+- Notion is **BYO-only** (not in EnterpriseRAG-Bench). A record's `content` is served verbatim as
+  a synthesized block tree; `databases.retrieve` returns the `2025-09-03` data-sources shape by
+  default and the `2022-06-28` inline-`properties` shape when that `Notion-Version` header is sent.
 - **Only read endpoints** are implemented.

@@ -7,7 +7,7 @@ agent over a corpus **you** supply, entirely offline.
 
 ```bash
 pip install -e ".[examples,mirage]"
-python examples/using-mirage/slack.py       # or gmail.py, gdrive.py, unified.py
+python examples/using-mirage/slack.py       # or gmail.py, gdrive.py, notion.py, unified.py
 ```
 
 Each script spins up its own throwaway mock on a tiny in-code corpus, points a mirage
@@ -28,6 +28,7 @@ of driving it in-process (see [FUSE mode](#fuse-mode-fuse) below).
 | `slack.py` | `SlackResource` | `/slack` | `ls` channels → dated `chat.jsonl`; `cat` + scoped `grep` |
 | `gmail.py` | `GmailResource` | `/gmail` | `ls` labels → dates → messages; `cat` + `jq .subject` |
 | `gdrive.py` | `GoogleDriveResource` | `/gdrive` | `ls -F` folders → files; `cat` a native Google doc |
+| `notion.py` | `NotionResource` | `/notion` | `ls` `pages/` + `databases/`; `cat` a `page.json` / `database.json` |
 | `unified.py` | all three | `/slack` `/gmail` `/gdrive` | one Workspace, one set of commands, three backends |
 
 The scripts navigate **top-down** (`ls` one level, `cat` one file) rather than walking a whole
@@ -42,7 +43,7 @@ the mock's GitHub serves issues/PRs/readme as documents — the models don't lin
 
 ## Pointing mirage at the mock
 
-**Slack** takes a `base_url` config now, so you point it straight at the mock — no glue:
+**Slack** and **Notion** take a `base_url` config, so you point them straight at the mock — no glue:
 
 ```python
 from _mirage import slack_base_url, serve_or_connect
@@ -52,6 +53,11 @@ with serve_or_connect(CORPUS) as mock:
     ws = Workspace({"/slack": resource}, mode=MountMode.READ)
     print(await (await ws.execute("ls /slack/channels/")).stdout_str())
 ```
+
+**Notion** is the same one-liner — `NotionConfig(base_url=notion_base_url(mock.base_url))`, no
+monkeypatch. mirage sends `Notion-Version: 2022-06-28`, which the mock's version-aware router
+serves (the legacy inline-`properties` / `databases.query` shape), so pages and databases both
+read correctly.
 
 **Google** has no such knob — its connectors read the API host from module constants that the
 base helpers return verbatim. So `_mirage.py` exposes `point_google_at(base_url)`, which rewrites

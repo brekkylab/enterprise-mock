@@ -153,6 +153,10 @@ def _service_columns(src, ex, subtype, parent_id, doc_id, thread_id, seq, org_do
                 "created_ts": created, "updated_ts": updated,
                 "version_number": ex.get("version_number"), "version_message": ex.get("version_message"),
                 "minor_edit": (1 if ex.get("minor_edit") else None)}
+    if src == "notion":
+        return {"subtype": subtype or "page", "parent_id": parent_id,
+                "properties": _j(ex.get("properties")), "icon": ex.get("icon"),
+                "cover": ex.get("cover"), "created_ts": created, "updated_ts": updated}
     return {}
 
 
@@ -268,7 +272,7 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
                   "label_ids", "thread", "html", "closed_at", "closed_by", "merged_by", "milestone",
                   "requested_reviewers", "resolution", "resolutiondate", "duedate",
                   "fix_versions", "versions", "assignee", "reporter", "minor_edit",
-                  "version_message", "version_number"):
+                  "version_message", "version_number", "properties", "icon", "cover"):
             if k in rec:
                 extras[k] = rec[k]
         subtype = rec.get("subtype")

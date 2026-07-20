@@ -1,6 +1,6 @@
 # Bring your own corpus
 
-Serve **any** document set through the six mock APIs — provide a JSONL where each line is one
+Serve **any** document set through the seven mock APIs — provide a JSONL where each line is one
 document, validate it, and load it:
 
 ```bash
@@ -36,18 +36,21 @@ Slack** (Slack messages have no title). One JSON object per line (JSONL) — for
 {"source_type": "jira", "project": "payments", "title": "SEV2: checkout latency spike", "content": "p95 checkout latency jumped to 2.1s.", "author_email": "bob@acme.com", "author_groups": ["payments"], "visibility": "group", "status": "In Progress", "issuetype": "Incident", "assignee": "ava@acme.com"}
 {"source_type": "google_drive", "folder": "marketing", "subtype": "spreadsheet", "title": "Q1 Revenue Model", "content": "month,revenue\nJan,120000\nFeb,135000", "author_email": "cfo@acme.com", "author_groups": ["finance"], "visibility": "group"}
 {"source_type": "confluence", "space": "handbook", "title": "On-call Runbook", "content": "Respond to gateway 502s: check dashboards, roll back, page on-call.", "author_email": "ava@acme.com", "author_groups": ["engineering"], "labels": ["oncall", "runbook"]}
+{"source_type": "notion", "teamspace": "engineering", "subtype": "database", "title": "Eng Tasks", "content": "Engineering task tracker.", "doc_id": "nt-tasks-db", "properties": {"Status": {"type": "select"}}}
+{"source_type": "notion", "teamspace": "engineering", "title": "Fix gateway 502s", "content": "Investigate token-bucket refill.", "parent": "nt-tasks-db", "properties": {"Status": "In Progress"}, "icon": "🐛"}
 ```
 
 See `sample_corpus.jsonl` for a fully-populated record of every source type.
 
-- `source_type` ∈ `slack | gmail | google_drive | github | jira | confluence`.
+- `source_type` ∈ `slack | gmail | google_drive | github | jira | confluence | notion`.
 - The grouping unit is named per service — `channel` (slack), `mailbox` (gmail),
-  `folder` (google_drive), `repo` (github), `project` (jira), `space` (confluence).
+  `folder` (google_drive), `repo` (github), `project` (jira), `space` (confluence),
+  `teamspace` (notion).
 - **ACL per doc:** `readers` (emails → users, other ids → groups) win; else `visibility`
   `public | group | private` (default `public`). Group membership is derived from each author's
   `author_groups` plus the grouping unit they wrote in.
 - Groups, users, and a per-user token for each are derived from the corpus and written to
-  `data/tokens.yaml` — the same token-scoped ACL then applies across all six APIs and MCP.
+  `data/tokens.yaml` — the same token-scoped ACL then applies across all seven APIs and MCP.
 - **Org:** the org name + domain are inferred from the corpus's dominant author email domain
   (a `@acme.com` corpus serves as org `acme`, so Slack `auth.test`, `/_mock/users`, and default
   emails all say `acme` — not a hardcoded default). Override with `MOCK_ORG_NAME` /

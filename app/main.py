@@ -15,17 +15,21 @@ from app import store, synth
 from app.acl import Acl
 from app.config import get_settings
 from app.oauth import Oauth
-from app.routers import atlassian, github, google, oauth, slack
+from app.routers import atlassian, github, google, notion, oauth, slack
 
 
 def _build_index(conn) -> dict:
-    idx = {"github": {}, "jira": {}, "confluence": {}}
+    idx = {"github": {}, "jira": {}, "confluence": {}, "notion": {}}
     for r in conn.execute(f"SELECT doc_id, {store.grouping_col('github')} AS container FROM {store.table('github')}"):
         idx["github"][(r["container"], synth.github_number(r["doc_id"]))] = r["doc_id"]
     for r in conn.execute(f"SELECT doc_id, {store.grouping_col('jira')} AS container FROM {store.table('jira')}"):
         idx["jira"][synth.jira_key(r["doc_id"], synth.jira_project_key(r["container"]))] = r["doc_id"]
     for r in conn.execute(f"SELECT doc_id FROM {store.table('confluence')}"):
         idx["confluence"][synth.confluence_id(r["doc_id"])] = r["doc_id"]
+    # Notion ids are dashed UUIDs; key the index by the dashless form so a client sending either
+    # dashed or dashless (both valid to real Notion) resolves — see routers.notion._norm.
+    for r in conn.execute(f"SELECT doc_id FROM {store.table('notion')}"):
+        idx["notion"][synth.notion_id(r["doc_id"]).replace("-", "")] = r["doc_id"]
     return idx
 
 
@@ -171,3 +175,4 @@ app.include_router(slack.router)
 app.include_router(google.router)
 app.include_router(github.router)
 app.include_router(atlassian.router)
+app.include_router(notion.router)
