@@ -58,13 +58,23 @@ try:  # best-effort; env-var path still applies if internals change
 except Exception:  # noqa: BLE001
     pass
 
-__all__ = ["point_google_at", "slack_base_url", "serve_or_connect", "google_oauth_user",
-           "cli_token", "lines", "run_mirage", "FUSE_HELP"]
+__all__ = ["point_google_at", "slack_base_url", "notion_base_url", "serve_or_connect",
+           "google_oauth_user", "cli_token", "lines", "run_mirage", "FUSE_HELP"]
 
 
 def slack_base_url(base_url: str) -> str:
     """The mock's Slack Web API base, for ``SlackConfig(base_url=...)``."""
     return f"{base_url.rstrip('/')}/slack/api"
+
+
+def notion_base_url(base_url: str) -> str:
+    """The mock's Notion API base, for ``NotionConfig(base_url=...)``.
+
+    mirage's Notion connector hits ``{base_url}/<endpoint>`` under the REST ``/v1`` namespace, so
+    point it at the mock's ``/notion/v1``. Like Slack (and unlike Google) the host is a plain
+    config field — no monkeypatch needed. mirage sends ``Notion-Version: 2022-06-28``, which the
+    mock's version-aware router serves (the legacy inline-properties / ``databases.query`` shape)."""
+    return f"{base_url.rstrip('/')}/notion/v1"
 
 
 # Message the examples show when a --fuse run can't mount (missing mfusepy or OS FUSE driver),
