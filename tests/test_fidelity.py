@@ -1,0 +1,234 @@
+"""API-shape fidelity: assert the new BYO fields + correctness fixes surface in the
+vendor response builders exactly as the real APIs shape them.
+
+Each test loads a tiny corpus that exercises one service's new fields, then calls the
+router's object builders directly (they take a row/conn, no live socket needed)."""
+from __future__ import annotations
+
+import json
+from datetime import datetime
+
+import pytest
+from starlette.requests import Request
+
+from app import store
+from app.config import Settings
+
+
+def _epoch(iso):
+    return int(datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp())
+
+
+def _load(tmp_path, records) -> Settings:
+    from app.importer.byo import load
+    p = tmp_path / "corpus.jsonl"
+    p.write_text("\n".join(json.dumps(r) for r in records))
+    settings = Settings(data_dir=tmp_path)
+    load(p, settings)
+    return settings
+
+
+def _req():
+    return Request({"type": "http", "headers": [], "query_string": b"", "scheme": "http",
+                    "server": ("mock", 80), "path": "/"})
+
+
+# --- GitHub ---------------------------------------------------------------------
+
+def test_github_issue_shape(tmp_path):
+    from app.routers.github import _issue_obj, _pr_obj
+    s = _load(tmp_path, [
+        {"source_type": "github", "doc_id": "gh1", "repo": "gw", "title": "Bug", "content": "x",
+         "author_email": "a@x.com", "state": "closed", "closed_at": "2026-02-01T00:00:00Z",
+         "closed_by": "b@x.com", "assignees": ["a@x.com"], "milestone": "v2",
+         "reactions": {"+1": 3, "heart": 1},
+         "comments": [{"content": "c", "author_email": "b@x.com", "reactions": {"+1": 1}}]},
+        {"source_type": "github", "doc_id": "pr1", "repo": "gw", "title": "PR", "content": "y",
+         "author_email": "a@x.com", "subtype": "pull_request", "merged_at": "2026-02-02T00:00:00Z",
+         "merged_by": "b@x.com", "requested_reviewers": ["c@x.com"]},
+    ])
+    conn = store.connect_ro(s.db_path)
+    iss = _issue_obj(conn, "org", "gw", store.get_document(conn, "github", "gh1"), "http://m/github")
+    # numeric id present and distinct from number (real connectors dedupe on id)
+    assert iss["id"] != iss["number"] and isinstance(iss["id"], int)
+    assert iss["node_id"]
+    # assignee (singular) present alongside assignees[]
+    assert iss["assignee"]["login"] == "a" and iss["assignees"][0]["login"] == "a"
+    assert iss["closed_at"].startswith("2026-02-01") and iss["closed_by"]["login"] == "b"
+    assert iss["milestone"]["title"] == "v2"
+    assert iss["state_reason"] == "completed" and iss["author_association"] == "MEMBER"
+    # reactions is the full 8-key rollup with total_count
+    assert iss["reactions"]["total_count"] == 4 and iss["reactions"]["+1"] == 3
+    assert iss["reactions"]["eyes"] == 0
+
+    pr = _pr_obj(conn, "org", "gw", store.get_document(conn, "github", "pr1"), "http://m/github")
+    assert pr["merged"] is True and pr["merged_by"]["login"] == "b"
+    assert pr["requested_reviewers"][0]["login"] == "c"
+
+
+def test_github_comment_reactions(tmp_path):
+    from app.routers.github import _gh_comment
+    s = _load(tmp_path, [
+        {"source_type": "github", "doc_id": "gh2", "repo": "gw", "title": "T", "content": "x",
+         "comments": [{"content": "hi", "author_email": "a@x.com", "reactions": {"heart": 2}}]},
+    ])
+    conn = store.connect_ro(s.db_path)
+    c = store.doc_comments(conn, "github", "gh2")[0]
+    obj = _gh_comment("org", "gw", 1, c, "http://m/github")
+    assert obj["reactions"]["heart"] == 2 and obj["node_id"] and obj["url"]
+    assert obj["reactions"]["total_count"] == 2
+
+
+# --- Jira ------------------------------------------------------------------------
+
+def test_jira_status_category_and_fields(tmp_path):
+    from app.routers.atlassian import _jira_issue
+    s = _load(tmp_path, [
+        {"source_type": "jira", "doc_id": "j1", "project": "pay", "title": "T", "content": "c",
+         "status": "In Progress", "assignee": "a@x.com", "reporter": "b@x.com",
+         "resolution": "Done", "resolutiondate": "2026-03-01T00:00:00Z", "duedate": "2026-04-01",
+         "fix_versions": ["1.2.0"]},
+        {"source_type": "jira", "doc_id": "j2", "project": "pay", "title": "D", "content": "c",
+         "status": "Done"},
+    ])
+    conn = store.connect_ro(s.db_path)
+    f = _jira_issue(conn, _req(), store.get_document(conn, "jira", "j1"))["fields"]
+    # the real 3-category model: "In Progress" -> indeterminate (not the old hardcoded "new")
+    assert f["status"]["statusCategory"]["key"] == "indeterminate"
+    assert f["assignee"]["emailAddress"] == "a@x.com"
+    assert f["reporter"]["emailAddress"] == "b@x.com"
+    assert f["resolution"]["name"] == "Done" and f["resolutiondate"].startswith("2026-03-01")
+    assert f["duedate"] == "2026-04-01" and f["fixVersions"][0]["name"] == "1.2.0"
+    # richer actor object
+    assert "avatarUrls" in f["assignee"] and f["assignee"]["accountType"] == "atlassian"
+    # scaffolds present so probing clients get [] / null, not KeyError
+    assert f["attachment"] == [] and f["votes"]["votes"] == 0
+
+    done = _jira_issue(conn, _req(), store.get_document(conn, "jira", "j2"))["fields"]
+    assert done["status"]["statusCategory"]["key"] == "done"
+    assert done["assignee"] is None  # unassigned by default
+
+
+# --- Confluence ------------------------------------------------------------------
+
+def test_confluence_body_and_version(tmp_path):
+    from app.routers.atlassian import _confluence_page
+    s = _load(tmp_path, [
+        {"source_type": "confluence", "doc_id": "c1", "space": "hb", "title": "P",
+         "content": "para one\n\npara two", "author_email": "a@x.com",
+         "created": "2026-01-01T00:00:00Z", "updated": "2026-02-01T00:00:00Z",
+         "version_message": "edited", "minor_edit": True, "labels": ["eng"]},
+    ])
+    conn = store.connect_ro(s.db_path)
+    row = store.get_document(conn, "confluence", "c1")
+    page = _confluence_page(conn, _req(), row, "body.storage,body.view,version,metadata.labels,history")
+    # storage (XHTML source) and view (rendered) must differ
+    assert page["body"]["storage"]["value"] != page["body"]["view"]["value"]
+    # version reflects the update + BYO message/minorEdit; history carries creation
+    assert page["version"]["number"] == 2 and page["version"]["message"] == "edited"
+    assert page["version"]["minorEdit"] is True
+    assert page["history"]["createdDate"].startswith("2026-01-01")
+    # labels reachable via expand=metadata.labels on the content object
+    assert page["metadata"]["labels"]["results"][0]["name"] == "eng"
+
+
+def test_confluence_restrictions_has_update(tmp_path):
+    # restrictions/byOperation must return BOTH read and update operations
+    import asyncio
+    import types
+    from app import synth
+    from app.acl import Acl
+    from app.routers.atlassian import confluence_restrictions
+    s = _load(tmp_path, [
+        {"source_type": "confluence", "doc_id": "c2", "space": "hb", "title": "P",
+         "content": "x", "author_email": "a@x.com", "visibility": "private"},
+    ])
+    cid = synth.confluence_id("c2")
+    app = types.SimpleNamespace(state=types.SimpleNamespace(
+        conn=store.connect_ro(s.db_path),
+        acl=Acl.load(s.tokens_path, s.admin_token, s.org_name),
+        index={"confluence": {cid: "c2"}}))
+    scope = {"type": "http", "scheme": "http", "server": ("m", 80), "path": "/",
+             "query_string": b"", "app": app,
+             "headers": [(b"authorization", f"Bearer {s.admin_token}".encode())]}
+    result = asyncio.run(confluence_restrictions(cid, Request(scope)))
+    assert "read" in result and "update" in result
+    assert result["read"]["restrictions"]["user"]["results"]  # the private doc's author
+
+
+# --- Drive -----------------------------------------------------------------------
+
+def test_drive_permissions_and_trashed(tmp_path):
+    from app.routers.google import _drive_permissions, _drive_q_match
+    s = _load(tmp_path, [
+        {"source_type": "google_drive", "doc_id": "d1", "folder": "mk", "title": "Deck",
+         "content": "x", "author_email": "a@x.com", "visibility": "public"},
+        {"source_type": "google_drive", "doc_id": "d2", "folder": "mk", "title": "Old",
+         "content": "y", "author_email": "a@x.com", "visibility": "group", "group": "mkt",
+         "trashed": True},
+    ])
+    conn = store.connect_ro(s.db_path)
+    perms = _drive_permissions(conn, "d1")
+    # public share is type "anyone" (not "domain"), and an owner permission exists
+    assert any(p["type"] == "anyone" for p in perms)
+    assert any(p["role"] == "owner" for p in perms)
+    # group-restricted doc surfaces a group-type permission
+    gperms = _drive_permissions(conn, "d2")
+    assert any(p["type"] == "group" for p in gperms)
+    # trashed excluded from a default `q`, included when asked
+    d2 = store.get_document(conn, "google_drive", "d2")
+    assert _drive_q_match(d2, "trashed = false") is False
+    assert _drive_q_match(d2, "trashed = true") is True
+
+
+# --- Gmail -----------------------------------------------------------------------
+
+def test_gmail_raw_and_headers(tmp_path):
+    from app.routers.google import _gmail_message
+    s = _load(tmp_path, [
+        {"source_type": "gmail", "doc_id": "m1", "mailbox": "ceo", "title": "Hi",
+         "content": "body text", "author_email": "ceo@x.com", "bcc": "secret@x.com"},
+    ])
+    conn = store.connect_ro(s.db_path)
+    row = store.get_document(conn, "gmail", "m1")
+    # raw format returns the base64url RFC822 message, no parsed payload
+    raw = _gmail_message(row, "raw")
+    assert "raw" in raw and "payload" not in raw
+    import base64
+    decoded = base64.urlsafe_b64decode(raw["raw"]).decode()
+    assert "Subject: Hi" in decoded and "MIME-Version: 1.0" in decoded
+    # Bcc must NOT appear in a fetched message's headers (stripped in transit)
+    full = _gmail_message(row, "full")
+    names = {h["name"] for h in full["payload"]["headers"]}
+    assert "Bcc" not in names and "MIME-Version" in names
+
+
+# --- Slack -----------------------------------------------------------------------
+
+def test_slack_reply_users_and_num_members(tmp_path):
+    from app.routers.slack import _message, _full_channel
+    from app import synth
+    s = _load(tmp_path, [
+        {"source_type": "slack", "doc_id": "s1", "channel": "inc", "content": "root",
+         "author_email": "bob@x.com", "visibility": "public",
+         "replies": [{"content": "a", "author_email": "ava@x.com"},
+                     {"content": "b", "author_email": "cid@x.com"},
+                     {"content": "c", "author_email": "ava@x.com"}]},
+    ])
+    conn = store.connect_ro(s.db_path)
+    thread = store.slack_thread(conn, "s1")
+    root, first_reply = thread[0], thread[1]
+    ru = store.slack_reply_authors(conn, "s1")
+    ruids = [synth.slack_user_id(e) for e in ru]
+    rootmsg = _message(root, reply_count=3, reply_users=ruids, reply_users_count=len(ru))
+    # 3 replies but only 2 distinct repliers -> counts differ (real Slack distinguishes them)
+    assert rootmsg["reply_count"] == 3 and rootmsg["reply_users_count"] == 2
+    assert len(rootmsg["reply_users"]) == 2
+    # a reply carries parent_user_id pointing at the root author
+    rep = _message(first_reply, parent_user_id=synth.slack_user_id("bob@x.com"))
+    assert rep["parent_user_id"] == synth.slack_user_id("bob@x.com")
+    # conversations.list channel object reports a real member count (was hardcoded 0)
+    import types
+    req = types.SimpleNamespace(app=types.SimpleNamespace(state=types.SimpleNamespace()))
+    ch = _full_channel(req, conn, "inc")
+    assert ch["num_members"] > 0 and ch["creator"] == "USERVICE0"

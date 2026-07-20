@@ -1,0 +1,224 @@
+"""Read-only coverage: drive each official SDK against the mock.
+
+Uses the ``live_server`` fixture (a real ``uvicorn`` on the conftest SAMPLE corpus, which
+carries the +α surface) — the official SDKs make real HTTP calls, so they need a listening
+port rather than the in-process ``TestClient``. Exercises every service's SDK read methods — Slack (slack_sdk),
+Gmail+Drive (google-api-python-client), GitHub (PyGithub), Jira+Confluence
+(atlassian-python-api) — asserting all return shape-correct data. Skipped unless the optional
+SDKs (``.[examples]``) are installed.
+"""
+from __future__ import annotations
+
+import pytest
+
+for _mod in ("slack_sdk", "googleapiclient", "github", "atlassian"):
+    pytest.importorskip(_mod)
+
+BASE = ADMIN = None  # set by the test from the live_server fixture
+_results: list[tuple[str, str, bool, str]] = []
+
+
+def check(service: str, name: str):
+    def run(fn):
+        try:
+            note = fn() or ""
+            _results.append((service, name, True, str(note)[:44]))
+        except Exception as e:  # noqa: BLE001
+            _results.append((service, name, False, f"{type(e).__name__}: {e}"[:44]))
+    return run
+
+
+# ------------------------------------------------------------------ Slack
+def slack():
+    from slack_sdk import WebClient
+    c = WebClient(token=ADMIN, base_url=f"{BASE}/slack/api/")
+    check("Slack", "auth.test")(lambda: c.auth_test()["ok"] and "ok")
+    chans = c.conversations_list(limit=200)["channels"]
+    inc = next(x["id"] for x in chans if x["name"] == "incidents")
+    check("Slack", "conversations.list")(lambda: f"{len(chans)} channels")
+    check("Slack", "conversations.info")(lambda: c.conversations_info(channel=inc)["channel"]["name"])
+    hist = c.conversations_history(channel=inc, limit=50)["messages"]
+    check("Slack", "conversations.history")(lambda: f"{len(hist)} top-level")
+    root = next(m for m in hist if m.get("reply_count"))
+    check("Slack", "message reactions")(lambda: root["reactions"][0]["name"] if root.get("reactions") else 1 / 0)
+    check("Slack", "conversations.replies")(
+        lambda: f'{len(c.conversations_replies(channel=inc, ts=root["ts"])["messages"])} in thread')
+    check("Slack", "conversations.members")(lambda: f'{len(c.conversations_members(channel=inc)["members"])} members')
+    check("Slack", "users.list")(lambda: f'{len(c.users_list()["members"])} users')
+    check("Slack", "search.messages")(
+        lambda: f'{len(m)} matches' if (m := c.search_messages(query="gateway")["messages"]["matches"]) else 1 / 0)
+
+
+# ------------------------------------------------------------------ Gmail
+def _gmail_svc():
+    from google.oauth2.credentials import Credentials
+    from google.api_core.client_options import ClientOptions
+    from googleapiclient.discovery import build
+    return build("gmail", "v1", credentials=Credentials(token=ADMIN),
+                 client_options=ClientOptions(api_endpoint=BASE), static_discovery=True)
+
+
+def gmail():
+    svc = _gmail_svc()
+    check("Gmail", "getProfile")(lambda: svc.users().getProfile(userId="me").execute()["emailAddress"])
+    check("Gmail", "labels.list")(lambda: f'{len(svc.users().labels().list(userId="me").execute()["labels"])} labels')
+    msgs = svc.users().messages().list(userId="me", maxResults=50).execute().get("messages", [])
+    check("Gmail", "messages.list")(lambda: f"{len(msgs)} messages")
+    # find the message that has an attachment
+    full = None
+    for stub in msgs:
+        mm = svc.users().messages().get(userId="me", id=stub["id"], format="full").execute()
+        parts = mm["payload"].get("parts", [])
+        if any(p.get("filename") for p in parts):
+            full = mm
+            break
+    full = full or svc.users().messages().get(userId="me", id=msgs[0]["id"], format="full").execute()
+    check("Gmail", "messages.get multipart")(lambda: full["payload"]["mimeType"])
+    att = next((p for p in full["payload"].get("parts", []) if p.get("filename")), None)
+    check("Gmail", "messages.attachments.get")(
+        lambda: len(svc.users().messages().attachments().get(
+            userId="me", messageId=full["id"], id=att["body"]["attachmentId"]).execute()["data"])
+        if att else 1 / 0)
+    qres = svc.users().messages().list(userId="me", q="board").execute().get("messages", [])
+    check("Gmail", "messages.list q (free text)")(lambda: f"{len(qres)} match" if qres else 1 / 0)
+    fres = svc.users().messages().list(userId="me", q="from:ceo").execute().get("messages", [])
+    check("Gmail", "messages.list q (from:)")(lambda: f"{len(fres)} match" if fres else 1 / 0)
+    check("Gmail", "threads.list")(lambda: f'{len(svc.users().threads().list(userId="me").execute().get("threads", []))} threads')
+    check("Gmail", "threads.get")(
+        lambda: f'{len(svc.users().threads().get(userId="me", id=msgs[0]["id"]).execute()["messages"])} msgs')
+
+
+# ------------------------------------------------------------------ Drive
+def drive():
+    from google.oauth2.credentials import Credentials
+    from google.api_core.client_options import ClientOptions
+    from googleapiclient.discovery import build
+    svc = build("drive", "v3", credentials=Credentials(token=ADMIN),
+                client_options=ClientOptions(api_endpoint=f"{BASE}/drive/v3"), static_discovery=True)
+    files = svc.files().list(pageSize=100,
+                             fields="files(id,name,mimeType,capabilities,size)").execute()["files"]
+    check("Drive", "files.list")(lambda: f"{len(files)} files")
+    by_mime = {f["mimeType"].rsplit(".", 1)[-1]: f for f in files}
+    check("Drive", "doc/sheet/slide types")(lambda: ",".join(sorted(by_mime)[:3]))
+    sheet = next(f for f in files if f["mimeType"].endswith("spreadsheet"))
+    check("Drive", "export Sheet=csv")(
+        lambda: svc.files().export(fileId=sheet["id"], mimeType="text/csv").execute()[:12])
+    doc = next(f for f in files if f["mimeType"].endswith("document"))
+    check("Drive", "export Doc=plain")(
+        lambda: svc.files().export(fileId=doc["id"], mimeType="text/plain").execute()[:12])
+    pdf = next((f for f in files if f["mimeType"] == "application/pdf"), None)
+    check("Drive", "get alt=media (binary)")(
+        lambda: len(svc.files().get_media(fileId=pdf["id"]).execute()) if pdf else 1 / 0)
+    check("Drive", "permissions.list")(
+        lambda: f'{len(svc.permissions().list(fileId=files[0]["id"]).execute()["permissions"])} perms')
+    ftxt = svc.files().list(q="fullText contains 'palette'", fields="files(id,name)").execute()["files"]
+    check("Drive", "files.list fullText contains")(lambda: f"{len(ftxt)} match" if ftxt else 1 / 0)
+
+
+# ------------------------------------------------------------------ GitHub
+def github():
+    from github import Auth, Github
+    gh = Github(auth=Auth.Token(ADMIN), base_url=f"{BASE}/github")
+    repo = gh.get_repo("acme/gateway")  # the SAMPLE corpus is @acme.com; owner is echoed by the mock
+    check("GitHub", "get_repo")(lambda: repo.full_name)
+    issues = list(repo.get_issues(state="all"))
+    check("GitHub", "get_issues (issues+PRs)")(lambda: f"{len(issues)} items")
+    check("GitHub", "PR marker on /issues")(
+        lambda: "yes" if any(i.pull_request for i in issues) else 1 / 0)
+    an_issue = next(i for i in issues if not i.pull_request)
+    check("GitHub", "issue.get_comments")(lambda: f"{len(list(an_issue.get_comments()))} comments")
+    prs = list(repo.get_pulls(state="all"))
+    check("GitHub", "get_pulls")(lambda: f"{len(prs)} PRs")
+    check("GitHub", "pull.get_reviews")(lambda: f"{len(list(prs[0].get_reviews()))} reviews")
+    check("GitHub", "get_readme")(lambda: repo.get_readme().name)
+    sr = gh.search_issues(query="refill")
+    check("GitHub", "search_issues")(lambda: f"{sr.totalCount} hits" if sr.totalCount else 1 / 0)
+
+
+# ---------------------------------------------- Google OAuth client config
+def google_oauth():
+    """Drive Gmail via a Google *client config* (not a raw token): the authorized-user
+    refresh flow and a service account impersonating a user — both refreshing against the
+    mock's /oauth2/token. Proves the config→token-endpoint→usr-token→ACL chain end to end."""
+    import json
+    import urllib.request
+    from google.api_core.client_options import ClientOptions
+    from google.oauth2 import service_account
+    from google.oauth2.credentials import Credentials as UserCreds
+    from googleapiclient.discovery import build
+
+    with urllib.request.urlopen(f"{BASE}/_mock/credentials") as r:
+        creds = json.load(r)
+    with urllib.request.urlopen(f"{BASE}/_mock/users") as r:
+        who = json.load(r)["users"][0]
+    oc, uri = creds["oauth_client"], creds["token_uri"]
+    email = who["email"]
+
+    # authorized_user credential = the shared oauth_client + a user's token (from /_mock/users,
+    # used as the refresh_token) + the mock's token_uri
+    uc = UserCreds(None, refresh_token=who["token"], token_uri=uri,
+                   client_id=oc["client_id"], client_secret=oc["client_secret"])
+    g = build("gmail", "v1", credentials=uc, static_discovery=True,
+              client_options=ClientOptions(api_endpoint=BASE))
+    check("OAuth", "authorized_user refresh")(
+        lambda: g.users().getProfile(userId="me").execute()["emailAddress"] == email or 1 / 0)
+
+    sa = creds["service_account"]
+    sac = service_account.Credentials.from_service_account_info(
+        sa, scopes=["https://www.googleapis.com/auth/gmail.readonly"], subject=email)
+    g2 = build("gmail", "v1", credentials=sac, static_discovery=True,
+               client_options=ClientOptions(api_endpoint=BASE))
+    check("OAuth", "service_account impersonation")(
+        lambda: g2.users().getProfile(userId="me").execute()["emailAddress"] == email or 1 / 0)
+
+
+# ------------------------------------------------------------------ Jira
+def jira():
+    from atlassian import Jira
+    j = Jira(url=f"{BASE}/atlassian", username="svc@x", password=ADMIN)
+    res = j.get("rest/api/3/search/jql", params={"maxResults": 50})
+    check("Jira", "search/jql")(lambda: f'{len(res["issues"])} issues')
+    tres = j.get("rest/api/3/search/jql", params={"jql": 'text ~ "latency"'})
+    check("Jira", "search/jql text~")(
+        lambda: f'{len(tres["issues"])} match' if tres["issues"] else 1 / 0)
+    key = next(i["key"] for i in res["issues"] if i["fields"]["summary"].startswith("SEV2"))
+    iss = j.get(f"rest/api/3/issue/{key}")
+    f = iss["fields"]
+    check("Jira", "issue comments")(lambda: f'{f["comment"]["total"]} comments')
+    check("Jira", "issue links")(lambda: f'{len(f["issuelinks"])} links')
+    check("Jira", "subtasks")(lambda: f'{len(f["subtasks"])} subtasks')
+    check("Jira", "issue/{key}/comment")(
+        lambda: f'{j.get(f"rest/api/3/issue/{key}/comment")["total"]} comments')
+    check("Jira", "issueLinkType")(
+        lambda: f'{len(j.get("rest/api/3/issueLinkType")["issueLinkTypes"])} types')
+
+
+# ------------------------------------------------------------------ Confluence
+def confluence():
+    from atlassian import Confluence
+    cf = Confluence(url=f"{BASE}/atlassian/wiki", username="svc@x", password=ADMIN)
+    res = cf.get("rest/api/content", params={"limit": 50, "expand": "body.storage"})
+    check("Confluence", "content.list")(lambda: f'{len(res["results"])} pages')
+    handbook = next(p for p in res["results"] if "Handbook" in p["title"])
+    kids = cf.get(f"rest/api/content/{handbook['id']}/child/page")
+    check("Confluence", "child/page")(lambda: f'{kids["size"]} children')
+    child = kids["results"][0]["id"]
+    check("Confluence", "child/comment")(
+        lambda: f'{cf.get(f"rest/api/content/{child}/child/comment")["size"]} comments')
+    check("Confluence", "content/{id}/label")(
+        lambda: ",".join(x["name"] for x in cf.get(f"rest/api/content/{child}/label")["results"]))
+    check("Confluence", "ancestors expand")(
+        lambda: f'{len(cf.get(f"rest/api/content/{child}", params={"expand": "ancestors"})["ancestors"])} ancestors')
+
+
+def test_sdk_read_coverage(live_server):
+    global BASE, ADMIN
+    base, settings = live_server
+    BASE, ADMIN = base, settings.admin_token
+    for fn in (slack, gmail, drive, github, jira, confluence, google_oauth):
+        try:
+            fn()
+        except Exception as e:  # noqa: BLE001 - a setup failure shouldn't abort the matrix
+            _results.append((fn.__name__.title(), "setup", False, f"{type(e).__name__}: {e}"[:44]))
+    failures = [f"{svc}.{name}: {note}" for svc, name, ok, note in _results if not ok]
+    assert not failures, f"{len(failures)} SDK check(s) failed:\n" + "\n".join(failures)

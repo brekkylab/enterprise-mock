@@ -1,0 +1,173 @@
+"""FastAPI app hosting all six vendor mocks under path prefixes.
+
+Startup opens the read-only SQLite DB, loads the ACL/token map, and builds reverse
+indexes (issue number / Jira key / Confluence id -> doc_id) for O(1) get-by-id.
+"""
+from __future__ import annotations
+
+import threading
+from contextlib import asynccontextmanager
+
+import yaml
+from fastapi import FastAPI, HTTPException, Request
+
+from app import store, synth
+from app.acl import Acl
+from app.config import get_settings
+from app.oauth import Oauth
+from app.routers import atlassian, github, google, oauth, slack
+
+
+def _build_index(conn) -> dict:
+    idx = {"github": {}, "jira": {}, "confluence": {}}
+    for r in conn.execute(f"SELECT doc_id, {store.grouping_col('github')} AS container FROM {store.table('github')}"):
+        idx["github"][(r["container"], synth.github_number(r["doc_id"]))] = r["doc_id"]
+    for r in conn.execute(f"SELECT doc_id, {store.grouping_col('jira')} AS container FROM {store.table('jira')}"):
+        idx["jira"][synth.jira_key(r["doc_id"], synth.jira_project_key(r["container"]))] = r["doc_id"]
+    for r in conn.execute(f"SELECT doc_id FROM {store.table('confluence')}"):
+        idx["confluence"][synth.confluence_id(r["doc_id"])] = r["doc_id"]
+    return idx
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = get_settings()
+    if not settings.db_path.exists():
+        raise RuntimeError(
+            f"DB not found at {settings.db_path}. Build it first: "
+            "python -m app.importer.erb  (or: python -m app.importer.byo <corpus.jsonl>)"
+        )
+    # A BYO import records the corpus-derived org in tokens.yaml; adopt it so the routers
+    # (which read get_settings().org_name/org_domain) stay consistent with the ACL. An erb
+    # (bench) tokens.yaml has no org, so the settings defaults stand.
+    if settings.tokens_path.exists():
+        data = yaml.safe_load(settings.tokens_path.read_text()) or {}
+        if data.get("org"):
+            settings.org_name = data["org"]
+        if data.get("org_domain"):
+            settings.org_domain = data["org_domain"]
+    conn = store.connect_ro(settings.db_path, mmap_mb=settings.sqlite_mmap_mb,
+                            cache_mb=settings.sqlite_cache_mb, temp_memory=True,
+                            busy_ms=settings.sqlite_busy_ms)
+    app.state.conn = conn
+    app.state.acl = Acl.load(settings.tokens_path, settings.admin_token, settings.org_name)
+    app.state.oauth = Oauth.load(settings.credentials_path)  # None if credentials.yaml absent
+    app.state.index = _build_index(conn)
+
+    # Per-source COUNT(*) can be slow on a very large / cold DB, so compute it once in a
+    # background thread (its own RO connection) and cache it — /health then stays O(1) and never
+    # blocks the ALB health check, even right after a cold start.
+    app.state.doc_counts = None
+    # channel -> {principals granted on any of its docs}, so conversations.list can decide a
+    # non-admin caller's visible channels by set-intersection (O(channels)) instead of a
+    # per-request doc_acl⋈messages join that scales with the docs granted to the caller.
+    app.state.channel_acl = None
+
+    def _warm_caches():
+        c = store.connect_ro(settings.db_path, mmap_mb=settings.sqlite_mmap_mb,
+                             cache_mb=settings.sqlite_cache_mb, temp_memory=True)
+        try:
+            cacl: dict[str, set] = {}
+            for ch, pid in c.execute(
+                    "SELECT DISTINCT d.channel, a.principal_id "
+                    "FROM doc_acl a JOIN slack_messages d ON d.doc_id = a.doc_id"):
+                cacl.setdefault(ch, set()).add(pid)
+            app.state.channel_acl = {k: frozenset(v) for k, v in cacl.items()}
+            app.state.doc_counts = {src: c.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+                                    for src, tbl in store.SOURCE_TABLE.items()}
+        finally:
+            c.close()
+
+    threading.Thread(target=_warm_caches, daemon=True).start()
+    try:
+        yield
+    finally:
+        conn.close()
+
+
+app = FastAPI(title="EnterpriseRAG-Bench Mock Server", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def parse_slack_form(request: Request, call_next):
+    """Slack SDK POSTs urlencoded params; stash them for the router's param lookup."""
+    if request.url.path.startswith("/slack/") and request.method == "POST":
+        ctype = request.headers.get("content-type", "")
+        if "application/x-www-form-urlencoded" in ctype:
+            request.state._form = dict(await request.form())
+    return await call_next(request)
+
+
+@app.get("/health")
+async def health():
+    # O(1): return the cached per-source counts (see lifespan). `by_source` is {} for the brief
+    # window after a cold start until the background count finishes.
+    counts = getattr(app.state, "doc_counts", None)
+    body = {"status": "ok"}
+    if counts is not None:
+        body["documents"] = sum(counts.values())
+        body["by_source"] = counts
+    else:
+        body["documents"] = None
+        body["by_source"] = {}
+    return body
+
+
+@app.get("/_mock/users")
+async def mock_users():
+    """Directory of every generated user + their token, for testing per-user ACL.
+
+    Not part of any emulated vendor API — a mock-only affordance. Present each user's
+    token in the same shape as ``data/tokens.yaml`` plus the groups they belong to, so a
+    caller can pick a token, send it to any of the six APIs, and see the ACL-filtered view.
+    Disable with ``MOCK_EXPOSE_TOKENS=false``. The admin/service token bypasses all filtering.
+    """
+    settings = get_settings()
+    if not settings.expose_tokens:
+        raise HTTPException(status_code=404, detail="Not Found")
+    conn = app.state.conn
+    acl = app.state.acl
+    tok = acl.email_to_token()
+    # Only authenticating users (those with a bearer token) are listed — the org's real roster.
+    # Other people the corpus references are display-only: they appear as owners/authors on
+    # documents, but aren't identities you can pick a token for here.
+    users = [
+        {"email": u["email"], "name": u["display_name"], "token": tok[u["email"]],
+         "groups": store.user_group_ids(conn, u["email"])}
+        for u in store.list_users(conn)
+        if u["email"] in tok
+    ]
+    return {"org": acl.org_name, "admin_token": acl.admin_token,
+            "count": len(users), "users": users}
+
+
+@app.get("/_mock/credentials")
+async def mock_credentials(request: Request):
+    """Directory of Google-style OAuth client credentials, for driving connectors that
+    configure with an OAuth client / service account rather than a raw access token.
+
+    Returns only the **shared** credentials: the single ``oauth_client`` (client_id/secret) and
+    the org ``service_account`` JSON (with its private key). There is no per-user data here — a
+    user's ``refresh_token`` is simply their bearer token from ``/_mock/users``, so build an
+    ``authorized_user`` credential by combining ``oauth_client`` + a token from ``/_mock/users`` +
+    ``token_uri``. ``token_uri`` points back at this mock's ``/oauth2/token``, so the client's
+    refresh / JWT-bearer exchange lands here. Impersonate a user with the service account by
+    setting ``subject=<email>``; a bare service account (no subject) resolves to the
+    admin/service token. Mock-only affordance; disable with ``MOCK_EXPOSE_TOKENS=false``. See
+    ``examples/using-official-sdk/gmail.py``.
+    """
+    settings = get_settings()
+    o = getattr(app.state, "oauth", None)
+    if not settings.expose_tokens or o is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    token_uri = f"{request.url.scheme}://{request.headers.get('host', 'localhost')}/oauth2/token"
+    return {"org": app.state.acl.org_name, "token_uri": token_uri,
+            "oauth_client": o.client_config(),
+            "service_account": o.service_account_json(token_uri)}
+
+
+app.include_router(oauth.router)
+app.include_router(slack.router)
+app.include_router(google.router)
+app.include_router(github.router)
+app.include_router(atlassian.router)

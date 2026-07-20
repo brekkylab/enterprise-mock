@@ -1,0 +1,187 @@
+"""Full-text search: store.build_fts + search_documents (FTS5) over the SAMPLE corpus.
+
+The `db` fixture is built via app.importer.byo.load, which now builds the docs_fts index, so
+these exercise the real FTS path (search.messages / confluence CQL both sit on search_documents).
+"""
+from app import store
+
+
+def test_fts_index_built(db):
+    assert store._has_fts(db), "importer should have built the docs_fts full-text index"
+
+
+def test_fts_slack_search(db):
+    rows = store.search_documents(db, "gateway", "slack")
+    assert rows, "expected a slack message matching 'gateway'"
+    assert any("gateway" in (r["content"] or "").lower() for r in rows)
+    # token search, ACL admin (visible_ids=None) sees it; a nonsense term matches nothing
+    assert store.search_documents(db, "zqxjkbrqznope", "slack") == []
+    assert store.count_search(db, "gateway", "slack") >= 1
+
+
+def test_fts_matches_title(db):
+    # confluence page titled "On-call Runbook" — FTS indexes title too
+    rows = store.search_documents(db, "runbook", "confluence")
+    assert any("runbook" in (r["title"] or "").lower() for r in rows)
+
+
+def test_fts_acl_scoped(db, acl, tokens):
+    # 'compensation' appears only in the group-restricted People page; a non-member can't find it
+    admin_hits = store.count_search(db, "compensation", "confluence", visible_ids=None)
+    bob_ids = acl.visible_ids(db, acl.resolve(tokens["bob@acme.com"]))  # not in 'people'
+    assert admin_hits >= 1
+    assert store.count_search(db, "compensation", "confluence", visible_ids=bob_ids) == 0
+
+
+def test_fts_source_aware_index(db):
+    # the importer rebuilds docs_fts with the indexed `src` column → fast source-intersection
+    assert store._fts_has_src(db)
+    assert store._fts_match("latency spike", "jira", has_src=True) == 'src:srcjira AND ("latency" AND "spike")'
+    # 'gateway' is in slack + confluence (SAMPLE); each source-scoped search returns only its
+    # own rows, and a source whose title/content lacks the term returns nothing
+    sl = store.search_documents(db, "gateway", "slack")
+    cf = store.search_documents(db, "gateway", "confluence")
+    assert sl and all("channel" in r.keys() for r in sl)
+    assert cf and all("space" in r.keys() for r in cf)
+    assert store.search_documents(db, "gateway", "github") == []
+
+
+def test_fts_drive_source(db):
+    # Drive is in the source-aware index, so fullText search hits it via FTS (title + content)
+    rows = store.search_documents(db, "palette", "google_drive")
+    assert rows and any("palette" in (r["content"] or "").lower() for r in rows)
+    # scoping is exact: a term absent from Drive title/content returns nothing for Drive
+    assert store.search_documents(db, "postmortem", "google_drive") == []
+
+
+def test_connect_rw_busy_timeout(tmp_path):
+    c = store.connect_rw(tmp_path / "rw.sqlite", busy_ms=12345)
+    try:
+        assert c.execute("PRAGMA busy_timeout").fetchone()[0] == 12345
+    finally:
+        c.close()
+
+
+def test_connect_ro_tuning(sample_settings):
+    # tuned connection applies the pragmas; a plain one keeps sqlite defaults (tests unaffected)
+    c = store.connect_ro(sample_settings.db_path, mmap_mb=64, cache_mb=16, temp_memory=True)
+    try:
+        assert c.execute("PRAGMA cache_size").fetchone()[0] == -16 * 1024
+        assert c.execute("PRAGMA temp_store").fetchone()[0] == 2  # MEMORY
+        assert c.execute("PRAGMA mmap_size").fetchone()[0] > 0
+    finally:
+        c.close()
+    d = store.connect_ro(sample_settings.db_path)
+    try:
+        assert d.execute("PRAGMA mmap_size").fetchone()[0] == 0
+    finally:
+        d.close()
+
+
+def test_fts_container_scoped(db):
+    # 'latency' is in the payments Jira project; container-scoping to a foreign project drops it
+    assert store.search_documents(db, "latency", "jira", container="payments")
+    assert store.count_search(db, "latency", "jira", container="payments") >= 1
+    assert store.search_documents(db, "latency", "jira", container="no-such-project") == []
+    assert store.count_search(db, "latency", "jira", container="no-such-project") == 0
+
+
+def test_fts_phrase_match_is_adjacent():
+    # phrase=True requires the tokens ADJACENT (an FTS5 phrase); the default ANDs them anywhere.
+    # This is what a grep push-down needs so a literal pattern isn't buried under scattered hits.
+    assert store._fts_match("upload csv", "slack", has_src=True) \
+        == 'src:srcslack AND ("upload" AND "csv")'
+    assert store._fts_match("upload csv", "slack", has_src=True, phrase=True) \
+        == 'src:srcslack AND ("upload csv")'
+
+
+def test_fts_phrase_boosts_literal_substring():
+    # FTS tokenization drops punctuation, so "upload.csv" and "upload csv" tokenize identically and
+    # bm25 can't tell them apart. A phrase search for "upload.csv" must still rank the doc that
+    # LITERALLY contains "upload.csv" above the coincidental "upload csv" mentions.
+    import sqlite3
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.executescript(store.SCHEMA)
+    rows = [
+        ("d_space", "please upload csv " + "filler " * 20),   # tokens adjacent, no literal dot
+        ("d_literal", "the export is upload.csv exactly"),     # literal "upload.csv"
+    ]
+    for doc_id, content in rows:
+        con.execute(
+            "INSERT INTO slack_messages(doc_id, channel, author_email, title, content, thread_seq, "
+            "created_ts) VALUES (?, 'eng', 'a@x.com', '', ?, 0, 1000)", (doc_id, content))
+    store.build_fts(con)
+    hits = store.search_documents(con, "upload.csv", "slack", phrase=True)
+    assert [h["doc_id"] for h in hits][:2] == ["d_literal", "d_space"], \
+        "the doc literally containing 'upload.csv' must rank first"
+    # a plain (non-phrase) search does not reorder — it only ANDs the tokens
+    plain = store.search_documents(con, "upload.csv", "slack")
+    assert {h["doc_id"] for h in plain} == {"d_literal", "d_space"}
+
+
+def test_search_order_by_recency():
+    # Slack sort=timestamp -> results ordered by the message's own ts (newest first), NOT relevance.
+    import sqlite3
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.executescript(store.SCHEMA)
+    for doc_id, ts in [("old", 1000), ("new", 2000), ("mid", 1500)]:
+        con.execute(
+            "INSERT INTO slack_messages(doc_id, channel, author_email, title, content, thread_seq, "
+            "created_ts) VALUES (?, 'eng', 'a@x.com', '', 'quarterly planning notes', 0, ?)",
+            (doc_id, ts))
+    store.build_fts(con)
+    recency = store.search_documents(con, "planning", "slack", order_by="recency")
+    assert [r["doc_id"] for r in recency] == ["new", "mid", "old"], "recency = newest ts first"
+    asc = store.search_documents(con, "planning", "slack", order_by="recency_asc")
+    assert [r["doc_id"] for r in asc] == ["old", "mid", "new"], "recency_asc = oldest first"
+
+
+def test_parse_slack_query():
+    from app.routers.slack import _parse_slack_query
+    # bare terms: no scope, AND semantics
+    assert _parse_slack_query("upload csv") == ("upload csv", None, False)
+    # a fully quoted query -> phrase
+    assert _parse_slack_query('"upload.csv"') == ("upload.csv", None, True)
+    # in:#channel -> container scope (not three stray search tokens), and the quote -> phrase
+    assert _parse_slack_query('in:#eng-ml "upload.csv"') == ("upload.csv", "eng-ml", True)
+    # in:channel (no #) also scopes; order-independent
+    assert _parse_slack_query("metadata source in:eng-ml") == ("metadata source", "eng-ml", False)
+    # in:@user (a DM) has no container in the channel corpus -> stripped, not mis-scoped as a channel
+    assert _parse_slack_query("in:@jonas retention") == ("retention", None, False)
+
+
+def test_search_channel_scope_and_phrase(db):
+    # in:#<channel> narrows to that channel exactly like the container arg; a foreign channel drops it
+    from app.routers.slack import _parse_slack_query
+    terms, container, phrase = _parse_slack_query("in:#general gateway")
+    assert container == "general" and not phrase
+    scoped = store.search_documents(db, terms, "slack", container=container)
+    assert store.search_documents(db, terms, "slack", container="no-such-channel") == []
+    # every scoped hit really is in that channel
+    assert all(r["channel"] == "general" for r in scoped)
+
+
+def test_jira_text_from_jql():
+    from app.routers.atlassian import _text_from_jql
+    assert _text_from_jql('project = PAY AND text ~ "latency spike"') == "latency spike"
+    assert _text_from_jql("summary ~ 'postmortem'") == "postmortem"
+    assert _text_from_jql("description ~ refill") == "refill"
+    assert _text_from_jql("project = PAY ORDER BY created") is None
+
+
+def test_gmail_q_parse_and_match():
+    from app.routers.google import _parse_gmail_q
+    free, ops = _parse_gmail_q('from:ceo@acme.com subject:board has:attachment quarterly')
+    assert free == "quarterly"
+    assert ops["from"] == ["ceo@acme.com"] and ops["subject"] == ["board"]
+    assert ops["has"] == ["attachment"]
+
+
+def test_github_issue_q_parse():
+    from app.routers.github import _parse_issue_q
+    free, quals = _parse_issue_q('repo:acme/gateway is:pr state:closed refill bug')
+    assert free == "refill bug"
+    assert quals["repo"] == ["acme/gateway"] and quals["is"] == ["pr"]
+    assert quals["state"] == ["closed"]
