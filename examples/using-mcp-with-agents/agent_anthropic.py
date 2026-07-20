@@ -1,50 +1,65 @@
 #!/usr/bin/env python3
 """Claude agent that retrieves enterprise data over MCP. Self-contained: run it directly.
 
-Connects the community-official Atlassian MCP server (`mcp-atlassian`, in Docker) — pointed at
-a `--url` mock if given (and reachable), else a local one it spins up — then lets Claude answer
-a question by calling the MCP tools. Retrieval is ACL-scoped by MOCK_MCP_TOKEN (default: the
-mock's admin token; set a per-user token to scope it).
+Connects a real MCP server — `--server atlassian` (default, `mcp-atlassian` in Docker) or
+`--server notion` (official `notion-mcp-server` via npx) — pointed at a `--url` mock if given
+(and reachable), else a local one it spins up, then lets Claude answer a question by calling the
+MCP tools. Retrieval is ACL-scoped by the token (default: the mock's admin token; pass `--token`
+a per-user token from GET /_mock/users to scope it).
 
-Prereqs: Docker available; ANTHROPIC_API_KEY set; pip install -e ".[mcp]".
-Run from the repo root:  python examples/using-mcp-with-agents/agent_anthropic.py [--url http://localhost:8000]
+Prereqs: ANTHROPIC_API_KEY set; pip install -e ".[mcp]"; Docker (atlassian) or Node/npx (notion).
+Run from the repo root:  python examples/using-mcp-with-agents/agent_anthropic.py [--server notion] [--url http://localhost:8000]
 """
 from __future__ import annotations
 
 import asyncio
 import os
 
-import atlassian_server
 from anthropic import AsyncAnthropic
 from anthropic.lib.tools.mcp import async_mcp_tool
-from mcp import ClientSession, StdioServerParameters
+from mcp import ClientSession
 from mcp.client.stdio import stdio_client
 
-from _mockserver import serve_or_connect
+from _mockserver import cli_token, serve_or_connect
+from _servers import SERVER, mcp_params
 
-CORPUS = [
-    {"source_type": "jira", "project": "payments", "title": "SEV2: checkout latency spike",
-     "content": "p95 checkout latency jumped to 2.1s after the payments migration; rolling back.",
-     "status": "In Progress", "issuetype": "Incident", "priority": "High"},
-    {"source_type": "confluence", "space": "runbooks",
-     "title": "On-call Runbook: checkout latency & bad deploys",
-     "content": "When a deploy or migration spikes checkout latency: check the payments "
-                "dashboards, roll back the last change, and page the on-call engineer."},
-]
+# Two ready-made corpora + questions; `--server atlassian` (default, Docker) or `--server notion`
+# (official notion-mcp-server via npx) picks which MCP server + corpus to use.
+CORPORA = {
+    "atlassian": [
+        {"source_type": "jira", "project": "payments", "title": "SEV2: checkout latency spike",
+         "content": "p95 checkout latency jumped to 2.1s after the payments migration; rolling back.",
+         "status": "In Progress", "issuetype": "Incident", "priority": "High"},
+        {"source_type": "confluence", "space": "runbooks",
+         "title": "On-call Runbook: checkout latency & bad deploys",
+         "content": "When a deploy or migration spikes checkout latency: check the payments "
+                    "dashboards, roll back the last change, and page the on-call engineer."},
+    ],
+    "notion": [
+        {"source_type": "notion", "teamspace": "payments", "title": "SEV2: checkout latency spike",
+         "content": "# SEV2\n\np95 checkout latency jumped to 2.1s after the payments migration; "
+                    "rolling back."},
+        {"source_type": "notion", "teamspace": "runbooks",
+         "title": "On-call Runbook: checkout latency & bad deploys",
+         "content": "# On-call\n\nWhen a deploy or migration spikes checkout latency: check the "
+                    "payments dashboards, roll back the last change, and page the on-call engineer."},
+    ],
+}
+CORPUS = CORPORA[SERVER]
 
 QUESTION = os.environ.get(
-    "Q", "Find the Jira incident about checkout latency and summarize it, then find the "
-         "on-call runbook in Confluence. Cite the issue key and the page title."
+    "Q", "Find the incident about checkout latency and summarize it, then find the on-call "
+         "runbook. Cite the titles."
 )
 
 
 async def main() -> None:
     client = AsyncAnthropic()
     with serve_or_connect(CORPUS) as mock:
-        # Point the MCP server at the mock: local (host-gateway) or a remote --url deployment
-        # (aliased + SSL-verify off). A remote --url additionally requires --token and --username.
-        atlassian_server.configure(mock.base_url, mock.token)
-        params = StdioServerParameters(command="docker", args=atlassian_server.docker_args())
+        # Point the chosen MCP server at the mock. Atlassian → Docker (local host-gateway or a
+        # remote --url, aliased + SSL-verify off; remote also needs --token/--username). Notion →
+        # npx notion-mcp-server with BASE_URL (reaches a local mock directly).
+        params = mcp_params(mock.base_url, cli_token(mock.token))
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as mcp_client:
                 await mcp_client.initialize()

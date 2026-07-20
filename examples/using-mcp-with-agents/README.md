@@ -1,32 +1,41 @@
 # Using MCP tools with agents
 
 Drive an LLM agent that retrieves corpus data through a **real MCP server** pointed at the
-mock. Works today for **Jira + Confluence** via the community-official
-[`mcp-atlassian`](https://github.com/sooperset/mcp-atlassian) server, with retrieval
-**ACL-scoped** by the token you give it.
+mock, with retrieval **ACL-scoped** by the token you give it. Two servers are wired up:
+
+- **Atlassian** (Jira + Confluence) via the community-official
+  [`mcp-atlassian`](https://github.com/sooperset/mcp-atlassian) (Docker) — the default.
+- **Notion** via the **official**
+  [`@notionhq/notion-mcp-server`](https://github.com/makenotion/notion-mcp-server) (npx/Node) —
+  it takes a first-class `BASE_URL` override, so pointing it at the mock is one env var.
+
+Pick one with `--server {atlassian,notion}` (default `atlassian`).
 
 | File | What it is |
 |---|---|
 | `agent_anthropic.py` | Claude agent (Anthropic SDK + its beta MCP tool runner) |
 | `agent_openai.py` | OpenAI agent (OpenAI Agents SDK) |
+| `_servers.py` | Picks the MCP server from `--server` and builds its stdio params |
 | `atlassian_server.py` | Builds the `docker run` args that point `mcp-atlassian` at the mock |
+| `notion_server.py` | Builds the `npx` args that point `notion-mcp-server` at the mock (`BASE_URL`) |
 | `_mockserver.py` | Starts the mock (`app.main`) as a subprocess on a small in-code corpus |
 
-Each script is **self-contained**: it spins up its own mock (via `_mockserver`) and connects
-`mcp-atlassian` to it — nothing else needs to be running.
+Each script is **self-contained**: it spins up its own mock (via `_mockserver`) and connects the
+chosen MCP server to it — nothing else needs to be running.
 
 ## Run
 
 ```bash
-pip install -e ".[mcp]"          # mcp + openai-agents + anthropic[mcp]; Docker also required
+pip install -e ".[mcp]"          # mcp + openai-agents + anthropic[mcp]
+                                 # Atlassian needs Docker; Notion needs Node (npx)
 
-# prove retrieval + ACL end-to-end through the real MCP server — no API key needed
-python -m pytest tests/test_mcp.py
-#   → an ACL-restricted Jira issue is readable by the admin token, blocked for a user token
+# prove retrieval + ACL end-to-end through the real MCP servers — no API key needed
+python -m pytest tests/test_mcp.py         # Atlassian (Docker): admin reads a Jira issue, user blocked
+python -m pytest tests/test_mcp_notion.py  # Notion (npx): admin reads a page, outsider blocked
 
-# drive it with an LLM agent (needs an API key)
-OPENAI_API_KEY=…    python examples/using-mcp-with-agents/agent_openai.py
-ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/agent_anthropic.py
+# drive it with an LLM agent (needs an API key). --server notion uses the Notion MCP server.
+OPENAI_API_KEY=…    python examples/using-mcp-with-agents/agent_openai.py --server notion
+ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/agent_anthropic.py --server notion
 ```
 
 Each agent spins up its own small mock by default, or pass `--url` to use an already-running one
@@ -65,9 +74,22 @@ token, not the username, authenticates.
   default `svc@example.com`) is only a fallback identity for when the token is unknown, so with
   a valid token it's ignored — that's why a placeholder works regardless of the corpus's domain.
 
-## Why only Atlassian
+## How the Notion server connects
 
-The other services' MCP servers **cannot** be pointed at a self-hosted mock, so no example is
+Much simpler than Atlassian — the official `notion-mcp-server` reads a **`BASE_URL`** env var and
+propagates it straight to its HTTP client, so `notion_server.py` just sets:
+
+- `BASE_URL=<mock>/notion` — the server appends the `/v1/...` paths from its bundled OpenAPI spec,
+  landing on the mock's `/notion/v1/...` routes. It runs on the host via `npx`, so a local
+  `localhost` mock is reached directly (no Docker/host-gateway aliasing).
+- `NOTION_TOKEN=<mock token>` — sent as `Authorization: Bearer …`; the mock resolves it to a user
+  and enforces that user's ACL (pass `--token` a per-user token from `GET /_mock/users` to scope
+  retrieval; default is the admin token = sees all).
+- `NOTION_VERSION=2025-09-03` — the mock's default (data-sources model).
+
+## Why not the other services
+
+The remaining services' MCP servers **cannot** be pointed at a self-hosted mock, so no example is
 provided — using them would require writing a base-URL-switchable MCP server against the mock's
 endpoints (not included here):
 
