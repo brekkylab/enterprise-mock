@@ -185,3 +185,18 @@ def test_github_issue_q_parse():
     assert free == "refill bug"
     assert quals["repo"] == ["acme/gateway"] and quals["is"] == ["pr"]
     assert quals["state"] == ["closed"]
+
+
+def test_fts_notion_search(db):
+    # the SAMPLE 'Notion On-call Runbook' body mentions dashboards
+    rows = store.search_documents(db, "dashboards", "notion")
+    assert rows and any(r["doc_id"] == "nt-runbook" for r in rows)
+    assert all("teamspace" in r.keys() for r in rows)  # source-scoped to notion's own table
+
+
+def test_fts_notion_acl_scoped(db, acl, tokens):
+    # 'confidential' appears only in the group-restricted people-ops page (nt-secret);
+    # an engineer (ava) can't find it, admin can
+    assert store.count_search(db, "confidential", "notion", visible_ids=None) >= 1
+    ava_ids = acl.visible_ids(db, acl.resolve(tokens["ava@acme.com"]))  # not in 'people'
+    assert store.count_search(db, "confidential", "notion", visible_ids=ava_ids) == 0

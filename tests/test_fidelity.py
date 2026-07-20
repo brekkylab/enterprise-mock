@@ -232,3 +232,70 @@ def test_slack_reply_users_and_num_members(tmp_path):
     req = types.SimpleNamespace(app=types.SimpleNamespace(state=types.SimpleNamespace()))
     ch = _full_channel(req, conn, "inc")
     assert ch["num_members"] > 0 and ch["creator"] == "USERVICE0"
+
+
+# --- Notion ---------------------------------------------------------------------
+
+def _notion_conn(tmp_path):
+    s = _load(tmp_path, [
+        {"source_type": "notion", "doc_id": "nf-page", "teamspace": "eng", "title": "Runbook",
+         "content": "# On-call\n\nRoll back and page.", "author_email": "ava@acme.com",
+         "visibility": "public", "icon": "📟",
+         "comments": [{"content": "add rate-limiter step", "author_email": "bob@acme.com"}]},
+        {"source_type": "notion", "doc_id": "nf-db", "subtype": "database", "teamspace": "eng",
+         "title": "Tasks", "content": "Tracker", "author_email": "ava@acme.com",
+         "visibility": "public", "properties": {"Status": {"type": "select"}}},
+        {"source_type": "notion", "doc_id": "nf-row", "parent": "nf-db", "teamspace": "eng",
+         "title": "Fix bug", "content": "body", "author_email": "bob@acme.com",
+         "visibility": "public", "properties": {"Status": "In Progress"}},
+    ])
+    return store.connect_ro(s.db_path)
+
+
+def test_notion_page_shape(tmp_path):
+    from app import synth
+    from app.routers.notion import _page_obj
+    conn = _notion_conn(tmp_path)
+    obj = _page_obj(conn, store.get_document(conn, "notion", "nf-page"))
+    assert obj["object"] == "page"
+    assert obj["id"] == synth.notion_id("nf-page")
+    assert obj["created_by"]["object"] == "user"
+    assert obj["parent"] == {"type": "workspace", "workspace": True}
+    assert obj["properties"]["title"]["type"] == "title"
+    assert obj["properties"]["title"]["title"][0]["plain_text"] == "Runbook"
+    assert obj["icon"] == {"type": "emoji", "emoji": "📟"}
+    assert obj["url"].startswith("https://www.notion.so/")
+    # a database row exposes its property values + a database_id parent
+    row = _page_obj(conn, store.get_document(conn, "notion", "nf-row"))
+    assert row["parent"]["type"] == "database_id"
+    assert row["properties"]["Status"]["select"]["name"] == "In Progress"
+
+
+def test_notion_database_and_data_source_shape(tmp_path):
+    from app import synth
+    from app.routers.notion import _data_source_obj, _database_obj
+    conn = _notion_conn(tmp_path)
+    dbrow = store.get_document(conn, "notion", "nf-db")
+    new = _database_obj(conn, dbrow, "2025-09-03")
+    assert new["object"] == "database"
+    assert new["data_sources"][0]["id"] == synth.notion_data_source_id("nf-db")
+    assert "properties" not in new
+    legacy = _database_obj(conn, dbrow, "2022-06-28")
+    assert "data_sources" not in legacy
+    assert legacy["properties"]["Status"]["type"] == "select"
+    ds = _data_source_obj(conn, dbrow)
+    assert ds["object"] == "data_source" and ds["properties"]["title"]["type"] == "title"
+
+
+def test_notion_user_and_block_shape(tmp_path):
+    from app import synth
+    from app.routers.notion import _user_obj
+    conn = _notion_conn(tmp_path)
+    u = _user_obj(conn, "ava@acme.com")
+    assert u["object"] == "user" and u["type"] == "person"
+    assert u["person"]["email"] == "ava@acme.com"
+    assert u["id"] == synth.notion_user_id("ava@acme.com")
+    blocks = synth.notion_blocks("nf-page", "# On-call\n\nRoll back and page.")
+    b = blocks[0]
+    assert b["object"] == "block" and b["type"] == "heading_1"
+    assert b["heading_1"]["rich_text"][0]["plain_text"] == "On-call"
