@@ -19,8 +19,8 @@ from mirage.resource.gdrive import GoogleDriveConfig, GoogleDriveResource
 from mirage.resource.gmail import GmailConfig, GmailResource
 from mirage.resource.slack import SlackConfig, SlackResource
 
-from _mirage import (FUSE_HELP, cli_token, google_oauth_user, lines, point_mirage_at,
-                     run_mirage, serve_or_connect)
+from _mirage import (FUSE_HELP, cli_token, google_oauth_user, lines, point_google_at,
+                     run_mirage, serve_or_connect, slack_base_url)
 
 # One term — "Q1" — deliberately threads through all three sources.
 CORPUS = [
@@ -70,11 +70,12 @@ async def _first_drive_file(ws):
 
 
 def build(mock) -> dict:
-    point_mirage_at(mock.base_url)
+    point_google_at(mock.base_url)  # Google has no host config; Slack takes base_url below
     client_id, client_secret, refresh_token, _ = google_oauth_user(mock.base_url)
     google = dict(client_id=client_id, client_secret=client_secret, refresh_token=refresh_token)
     return {  # three backends, one filesystem
-        "/slack": SlackResource(SlackConfig(token=cli_token(mock.token))),
+        "/slack": SlackResource(SlackConfig(token=cli_token(mock.token),
+                                            base_url=slack_base_url(mock.base_url))),
         "/gmail": GmailResource(GmailConfig(**google)),
         "/gdrive": GoogleDriveResource(GoogleDriveConfig(**google)),
     }

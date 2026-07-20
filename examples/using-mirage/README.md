@@ -40,25 +40,33 @@ GitHub connector mirrors a repo's *source-file tree* via the git `trees`/`blobs`
 the mock's GitHub serves issues/PRs/readme as documents — the models don't line up). Use
 [`examples/using-official-sdk/`](../using-official-sdk/) for those.
 
-## The one piece of glue: `point_mirage_at`
+## Pointing mirage at the mock
 
-The official SDKs take a `base_url`; **mirage does not** — its Slack/Google connectors hardcode
-the API host (`slack.com`, `googleapis.com`) in module constants. So `_mirage.py` exposes
-`point_mirage_at(base_url)`, which rewrites those constants to the mock before the resources are
-built:
+**Slack** takes a `base_url` config now, so you point it straight at the mock — no glue:
 
 ```python
-from _mirage import point_mirage_at, serve_or_connect
+from _mirage import slack_base_url, serve_or_connect
 with serve_or_connect(CORPUS) as mock:
-    point_mirage_at(mock.base_url)          # slack.com / googleapis.com  ->  the mock
-    resource = SlackResource(SlackConfig(token=mock.token))
+    resource = SlackResource(SlackConfig(token=mock.token,
+                                         base_url=slack_base_url(mock.base_url)))
     ws = Workspace({"/slack": resource}, mode=MountMode.READ)
     print(await (await ws.execute("ls /slack/channels/")).stdout_str())
 ```
 
-It redirects the Slack API, the OAuth token endpoint, the Drive API, and the Docs/Sheets/Slides
-APIs (mirage reads native Google docs structurally through those, not via Drive export).
-`_mirage.py` also re-exports `serve_or_connect` / `google_oauth_user` / `cli_token` from
+**Google** has no such knob — its connectors read the API host from module constants that the
+base helpers return verbatim. So `_mirage.py` exposes `point_google_at(base_url)`, which rewrites
+those constants to the mock before the Google resources are built:
+
+```python
+from _mirage import point_google_at
+point_google_at(mock.base_url)              # googleapis.com  ->  the mock
+gmail = GmailResource(GmailConfig(**creds))
+```
+
+It redirects the OAuth token endpoint, the Drive API, and the Docs/Sheets/Slides APIs (mirage
+reads native Google docs structurally through those, not via Drive export) — each to a distinct
+mock path, so Docs and Slides don't collide. `_mirage.py` also re-exports `serve_or_connect` /
+`google_oauth_user` / `cli_token` from
 [`../using-official-sdk/_mockserver.py`](../using-official-sdk/_mockserver.py), so the `--url` /
 `--user` / `--token` flags behave exactly as in those examples.
 

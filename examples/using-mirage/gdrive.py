@@ -3,8 +3,8 @@
 
 Mirage mounts the mock's Drive API as a filesystem — folders and files you read with plain
 ``ls`` / ``cat`` (Google-native docs are exported to text on read). Auth is an ordinary Google
-authorized-user credential; the only mirage-specific glue is ``point_mirage_at`` (mirage
-hardcodes ``googleapis.com``; we redirect it at the mock).
+authorized-user credential; the only mirage-specific glue is ``point_google_at`` (mirage's
+Google connectors have no host config, so we patch the module constants at the mock).
 
     pip install -e ".[examples,mirage]"
     python examples/using-mirage/gdrive.py                                 # first user, locally
@@ -21,7 +21,7 @@ import sys
 from mirage import MountMode, Workspace
 from mirage.resource.gdrive import GoogleDriveConfig, GoogleDriveResource
 
-from _mirage import (FUSE_HELP, google_oauth_user, lines, point_mirage_at, run_mirage,
+from _mirage import (FUSE_HELP, google_oauth_user, lines, point_google_at, run_mirage,
                      serve_or_connect)
 
 CORPUS = [
@@ -35,7 +35,7 @@ CORPUS = [
 
 
 def build(mock):
-    point_mirage_at(mock.base_url)
+    point_google_at(mock.base_url)
     client_id, client_secret, refresh_token, _ = google_oauth_user(mock.base_url)
     return GoogleDriveResource(GoogleDriveConfig(
         client_id=client_id, client_secret=client_secret, refresh_token=refresh_token))

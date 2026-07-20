@@ -7,7 +7,6 @@
 
 [![tests](https://github.com/brekkylab/enterprise-mock/actions/workflows/ci.yml/badge.svg)](https://github.com/brekkylab/enterprise-mock/actions/workflows/ci.yml)
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
-![docker](https://img.shields.io/badge/docker-ready-blue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A **read-only** mock server that stands in for six enterprise SaaS knowledge sources at once.

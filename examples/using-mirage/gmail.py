@@ -4,8 +4,8 @@
 Mirage mounts the mock's Gmail API as a filesystem — a directory per label, then per day, then
 a file per message — so an agent reads mail with plain ``ls`` / ``cat``. Auth is an ordinary
 Google authorized-user credential (client_id/secret + refresh token); the only mirage-specific
-glue is ``point_mirage_at`` (mirage hardcodes ``gmail.googleapis.com``; we redirect it at the
-mock, whose ``/oauth2/token`` honors the refresh).
+glue is ``point_google_at`` (mirage's Google connectors have no host config, so we patch the
+module constants; the mock's ``/oauth2/token`` honors the refresh).
 
     pip install -e ".[examples,mirage]"
     python examples/using-mirage/gmail.py                                  # first user, locally
@@ -22,7 +22,7 @@ import sys
 from mirage import MountMode, Workspace
 from mirage.resource.gmail import GmailConfig, GmailResource
 
-from _mirage import (FUSE_HELP, google_oauth_user, lines, point_mirage_at, run_mirage,
+from _mirage import (FUSE_HELP, google_oauth_user, lines, point_google_at, run_mirage,
                      serve_or_connect)
 
 CORPUS = [
@@ -35,7 +35,7 @@ CORPUS = [
 
 
 def build(mock):
-    point_mirage_at(mock.base_url)
+    point_google_at(mock.base_url)
     client_id, client_secret, refresh_token, _ = google_oauth_user(mock.base_url)
     return GmailResource(GmailConfig(
         client_id=client_id, client_secret=client_secret, refresh_token=refresh_token))

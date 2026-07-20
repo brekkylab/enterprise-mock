@@ -2,8 +2,8 @@
 """Read Slack through mirage's virtual filesystem. Self-contained: run it directly.
 
 Mirage mounts the mock's Slack API as a filesystem — channels, dates, and a ``chat.jsonl`` per
-day — so an agent reads it with plain ``ls`` / ``cat``. The only mirage-specific glue is
-``point_mirage_at`` (mirage hardcodes ``slack.com``; we redirect it at the mock).
+day — so an agent reads it with plain ``ls`` / ``cat``. Slack's API host is a config knob
+(``SlackConfig(base_url=...)``), so we point it straight at the mock — no monkeypatch.
 
     pip install -e ".[examples,mirage]"
     python examples/using-mirage/slack.py                                  # local throwaway mock
@@ -21,8 +21,8 @@ import sys
 from mirage import MountMode, Workspace
 from mirage.resource.slack import SlackConfig, SlackResource
 
-from _mirage import (FUSE_HELP, cli_token, lines, point_mirage_at, run_mirage,
-                     serve_or_connect)
+from _mirage import (FUSE_HELP, cli_token, lines, run_mirage, serve_or_connect,
+                     slack_base_url)
 
 CORPUS = [  # `created` keeps the throwaway channels' dates tight (one day) rather than synthesized
     {"source_type": "slack", "channel": "eng", "content": "Deploy freeze starts Friday 5pm.",
@@ -34,10 +34,10 @@ CORPUS = [  # `created` keeps the throwaway channels' dates tight (one day) rath
 
 
 def build(mock):
-    # Redirect mirage's hardcoded Slack host at the mock, then build the resource.
+    # Slack's host is a config knob — point it at the mock (no monkeypatch needed).
     # --token <usr-token> (from /_mock/users) → ACL-filtered to that user; else admin sees all.
-    point_mirage_at(mock.base_url)
-    return SlackResource(SlackConfig(token=cli_token(mock.token)))
+    return SlackResource(SlackConfig(token=cli_token(mock.token),
+                                     base_url=slack_base_url(mock.base_url)))
 
 
 async def main(resource) -> None:

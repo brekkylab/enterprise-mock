@@ -2,23 +2,25 @@
 
 Mirage (https://github.com/strukto-ai/mirage) is a virtual filesystem for AI agents: you mount
 a SaaS backend and read it with bash-style commands (``ls``, ``cat``, ``grep``, ``find``).
-Unlike the official SDKs, its Slack/Google connectors **hardcode the API host** in module-level
-constants with no config or env override:
+Slack is configured directly: ``SlackConfig(base_url=...)`` points the Slack connector at the
+mock, so no monkeypatch is needed for it.
 
-    mirage.core.slack._client.SLACK_API       = "https://slack.com/api"
-    mirage.core.google._client.TOKEN_URL      = "https://oauth2.googleapis.com/token"
-    mirage.core.google._client.GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1"
-    mirage.core.google._client.DRIVE_API_BASE = "https://www.googleapis.com/drive/v3"
+Google has no such knob — its connectors read the API host from module-level constants that the
+base helpers (``drive_base``/``gmail_base``/…) return verbatim, ignoring the config:
+
+    mirage.core.google._client.TOKEN_URL       = "https://oauth2.googleapis.com/token"
+    mirage.core.google._client.GMAIL_API_BASE  = "https://gmail.googleapis.com/gmail/v1"
+    mirage.core.google._client.DRIVE_API_BASE  = "https://www.googleapis.com/drive/v3"
     # native Drive docs are read via the Docs/Sheets/Slides APIs, not Drive export:
     mirage.core.google._client.DOCS_API_BASE   = "https://docs.googleapis.com/v1"
     mirage.core.google._client.SHEETS_API_BASE = "https://sheets.googleapis.com/v4"
     mirage.core.google._client.SLIDES_API_BASE = "https://slides.googleapis.com/v1"
 
-The Google constants are imported *by value* into consuming submodules
-(``from ..._client import GMAIL_API_BASE``), so ``point_mirage_at`` patches both the source
+Those constants are also imported *by value* into consuming submodules
+(``from ..._client import GMAIL_API_BASE``), so ``point_google_at`` patches both the source
 constant (which any module imported later will read) **and** every already-imported module that
 carries a copy. That makes the redirect order-independent — call it once before building the
-resources.
+Google resources.
 
 This module also re-exports the serve/credential helpers from the sibling
 ``using-official-sdk/_mockserver.py`` so the mirage scripts share the same ``--url`` /
@@ -56,8 +58,13 @@ try:  # best-effort; env-var path still applies if internals change
 except Exception:  # noqa: BLE001
     pass
 
-__all__ = ["point_mirage_at", "serve_or_connect", "google_oauth_user", "cli_token", "lines",
-           "run_mirage", "FUSE_HELP"]
+__all__ = ["point_google_at", "slack_base_url", "serve_or_connect", "google_oauth_user",
+           "cli_token", "lines", "run_mirage", "FUSE_HELP"]
+
+
+def slack_base_url(base_url: str) -> str:
+    """The mock's Slack Web API base, for ``SlackConfig(base_url=...)``."""
+    return f"{base_url.rstrip('/')}/slack/api"
 
 
 # Message the examples show when a --fuse run can't mount (missing mfusepy or OS FUSE driver),
@@ -107,17 +114,17 @@ def run_mirage(coro):
     return asyncio.run(_run())
 
 
-def point_mirage_at(base_url: str) -> None:
-    """Redirect mirage's Slack + Google connectors at the mock at ``base_url``.
+def point_google_at(base_url: str) -> None:
+    """Redirect mirage's Google connectors (Gmail/Drive/Docs/Sheets/Slides + OAuth) at the mock.
 
-    Idempotent and order-independent: patches the source ``_client`` constants and every
-    already-imported module that copied one. Call once, before constructing the resources.
+    Google exposes no host config (unlike Slack's ``base_url``), so we patch the ``_client``
+    constants directly. Idempotent and order-independent: patches the source constants and every
+    already-imported module that copied one. Call once, before constructing the Google resources.
     """
     base = base_url.rstrip("/")
 
     # value each hardcoded constant name should take against the mock
     overrides = {
-        "SLACK_API": f"{base}/slack/api",
         "TOKEN_URL": f"{base}/oauth2/token",
         "GMAIL_API_BASE": f"{base}/gmail/v1",
         "DRIVE_API_BASE": f"{base}/drive/v3",
@@ -126,9 +133,8 @@ def point_mirage_at(base_url: str) -> None:
         "SLIDES_API_BASE": f"{base}/slides/v1",
     }
 
-    # Ensure the source-of-truth modules exist so late by-value imports read the patched value.
+    # Ensure the source-of-truth module exists so late by-value imports read the patched value.
     import mirage.core.google._client  # noqa: F401
-    import mirage.core.slack._client  # noqa: F401
 
     # Patch the source constants + any mirage.core.* module already holding a copy.
     for mod in list(sys.modules.values()):
