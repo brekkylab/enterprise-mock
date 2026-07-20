@@ -1,32 +1,27 @@
 """ACL enforced end-to-end through real MCP servers pointed at the mock.
 
-Uses the ``live_server`` fixture (a real ``uvicorn`` on the conftest SAMPLE corpus) and drives the
-same MCP-server wiring the examples ship (``examples/using-mcp-with-agents/_servers.py``): a
-document the admin can read is blocked for an ACL-restricted user — same tool, same object,
-different identity.
+Uses the ``live_server`` fixture (a real ``uvicorn`` on the conftest SAMPLE corpus) and drives a
+real MCP server against it: a document the admin can read is blocked for an ACL-restricted user —
+same tool, same object, different identity.
 
 - **Atlassian** (`mcp-atlassian`, Docker) — skipped unless Docker is available.
 - **Notion** (`@notionhq/notion-mcp-server`, npx) — skipped unless ``npx`` (Node) is on PATH; the
   first run downloads the npm package.
 
-Both require the ``mcp`` package.
+Both require the ``mcp`` package. The stdio params below intentionally **duplicate** the wiring in
+``examples/using-mcp-with-agents/_servers.py`` rather than importing it — a test must not reach
+into ``examples/`` (no ``sys.path`` hacks); a little copied setup is the lesser evil.
 """
 from __future__ import annotations
 
 import asyncio
 import shutil
 import subprocess
-import sys
-from pathlib import Path
 
 import pytest
 import yaml
 
 pytest.importorskip("mcp")
-
-# The examples' backend registry is the single source of the MCP-server wiring under test.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "examples" / "using-mcp-with-agents"))
-import _servers  # noqa: E402
 
 from app import store, synth  # noqa: E402
 from app.acl import Acl  # noqa: E402
@@ -41,31 +36,60 @@ def _docker_available() -> bool:
         return False
 
 
+def _atlassian_params(base: str, token: str):
+    """`docker run` args pointing mcp-atlassian at a local mock (see examples/.../_servers.py).
+
+    mcp-atlassian only classifies a host as Atlassian *Cloud* when it ends in `.atlassian.net`, so
+    use a fake `mock.atlassian.net` mapped to the host via `--add-host`, and Basic auth where the
+    api_token is a mock token (the mock resolves it to a user and enforces that user's ACL)."""
+    from mcp import StdioServerParameters
+
+    port = base.rsplit(":", 1)[1]  # Docker reaches the host mock via host-gateway
+    host, url = "mock.atlassian.net", f"http://mock.atlassian.net:{port}"
+    return StdioServerParameters(command="docker", args=[
+        "run", "-i", "--rm", f"--add-host={host}:host-gateway",
+        "-e", f"JIRA_URL={url}/atlassian", "-e", "JIRA_USERNAME=svc@example.com",
+        "-e", f"JIRA_API_TOKEN={token}",
+        "-e", f"CONFLUENCE_URL={url}/atlassian/wiki", "-e", "CONFLUENCE_USERNAME=svc@example.com",
+        "-e", f"CONFLUENCE_API_TOKEN={token}",
+        "-e", "MCP_ALLOWED_URL_DOMAINS=atlassian.net", "-e", "READ_ONLY_MODE=true",
+        "ghcr.io/sooperset/mcp-atlassian:latest", "--transport", "stdio",
+    ])
+
+
+def _notion_params(base: str, token: str):
+    """`npx` args pointing the official notion-mcp-server at the mock via BASE_URL."""
+    from mcp import StdioServerParameters
+
+    return StdioServerParameters(command="npx", args=["-y", "@notionhq/notion-mcp-server"],
+                                 env={"BASE_URL": f"{base.rstrip('/')}/notion",
+                                      "NOTION_TOKEN": token, "NOTION_VERSION": "2025-09-03"})
+
+
 def _restricted_doc(settings, user_token: str, source: str, where: str = "1=1"):
     """A doc of ``source`` the admin can read but this user cannot (per the mock's own ACL)."""
     conn = store.connect_ro(settings.db_path)
     acl = Acl.load(settings.tokens_path, settings.admin_token, settings.org_name)
     caller = acl.resolve(user_token)
     vids = acl.visible_ids(conn, caller)
-    tbl = store.table(source)
-    for row in conn.execute(f"SELECT * FROM {tbl} WHERE {where}"):
+    for row in conn.execute(f"SELECT * FROM {store.table(source)} WHERE {where}"):
         if store.get_document(conn, source, row["doc_id"], visible_ids=vids) is None:
             return row, caller.email
     return None, caller.email
 
 
-async def _call(backend, token, base, tool_pred, args_fn, ok_pred) -> bool:
-    """Connect ``backend`` at ``base`` with ``token``, call the tool matched by ``tool_pred`` with
-    ``args_fn(tools)``, and return ``ok_pred(text)`` over the response text."""
+async def _call(params, tool_pred, args, ok_pred) -> bool:
+    """Connect via ``params``, call the tool matched by ``tool_pred`` with ``args``, and return
+    ``ok_pred(text)`` over the response text."""
     from mcp import ClientSession
     from mcp.client.stdio import stdio_client
 
-    async with stdio_client(backend.params(base, token, "svc@example.com")) as (r, w):
+    async with stdio_client(params) as (r, w):
         async with ClientSession(r, w) as sess:
             await sess.initialize()
             tools = (await sess.list_tools()).tools
             tool = next(t for t in tools if tool_pred(t.name))
-            res = await sess.call_tool(tool.name, args_fn(tools))
+            res = await sess.call_tool(tool.name, args)
             text = "".join(getattr(c, "text", "") for c in res.content)
             return ok_pred(text)
 
@@ -79,13 +103,12 @@ def test_mcp_atlassian_acl_enforced(live_server):
     row, email = _restricted_doc(settings, user["token"], "jira")
     assert row is not None, f"no Jira issue is ACL-restricted from {email} in the sample corpus"
     key = synth.jira_key(row["doc_id"], synth.jira_project_key(row["project"]))
-    backend = _servers.BACKENDS["atlassian"]
 
     def reads(token):
         return asyncio.run(_call(
-            backend, token, base,
+            _atlassian_params(base, token),
             tool_pred=lambda n: n == "jira_get_issue",
-            args_fn=lambda _tools: {"issue_key": key},
+            args={"issue_key": key},
             ok_pred=lambda t: t.strip().startswith("{") and '"key"' in t))
 
     assert reads(settings.admin_token), "admin should read the issue through mcp-atlassian"
@@ -101,14 +124,13 @@ def test_mcp_notion_acl_enforced(live_server):
     row, email = _restricted_doc(settings, user["token"], "notion", "subtype IS NOT 'database'")
     assert row is not None, f"no Notion page is ACL-restricted from {email} in the sample corpus"
     page_id = synth.notion_id(row["doc_id"])
-    backend = _servers.BACKENDS["notion"]
 
     def reads(token):
         return asyncio.run(_call(
-            backend, token, base,
+            _notion_params(base, token),
             # the proxy names tools from OpenAPI operationIds (e.g. "API-retrieve-a-page")
             tool_pred=lambda n: "retrieve-a-page" in n or ("page" in n and "retrieve" in n),
-            args_fn=lambda _tools: {"page_id": page_id},
+            args={"page_id": page_id},
             ok_pred=lambda t: '"object": "page"' in t or '"object":"page"' in t))
 
     assert reads(settings.admin_token), "admin should read the page through notion-mcp-server"
