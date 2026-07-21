@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+from datetime import datetime, timezone
 from urllib.parse import parse_qsl, quote
 
 ALGORITHM = "AWS4-HMAC-SHA256"
+AMZ_DATE_FORMAT = "%Y%m%dT%H%M%SZ"
 
 
 def _sha256_hex(data: bytes) -> str:
@@ -81,6 +83,26 @@ def canonical_request(method, path, query, headers, signed_headers, payload_hash
         signed_headers,
         payload_hash,
     ])
+
+
+def parse_amz_date(amz_date: str) -> datetime | None:
+    """Parse an ``x-amz-date``/``X-Amz-Date`` value (``YYYYMMDDTHHMMSSZ``, UTC).
+
+    Returns ``None`` if the value is missing or doesn't match the expected format.
+    """
+    if not amz_date:
+        return None
+    try:
+        return datetime.strptime(amz_date, AMZ_DATE_FORMAT).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def is_skewed(request_time: datetime, now: datetime, max_skew: int = 900) -> bool:
+    """True if ``request_time`` is more than ``max_skew`` seconds away from ``now`` (either
+    direction) — a pure function so the 15-minute clock-skew window is testable without a
+    real clock."""
+    return abs((now - request_time).total_seconds()) > max_skew
 
 
 def expected_signature(secret, method, path, query, headers, signed_headers,

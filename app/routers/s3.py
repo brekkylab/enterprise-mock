@@ -32,6 +32,7 @@ NS = "http://s3.amazonaws.com/doc/2006-03-01/"
 _MAX_KEYS = 1000
 _ERR_STATUS = {"MissingSecurityHeader": 403, "AuthorizationHeaderMalformed": 400,
                "InvalidAccessKeyId": 403, "SignatureDoesNotMatch": 403,
+               "RequestTimeTooSkewed": 403,
                "AccessDenied": 403, "NoSuchBucket": 404, "NoSuchKey": 404,
                "InvalidRange": 416, "InvalidArgument": 400}
 
