@@ -214,3 +214,27 @@ def test_mcp_github_bridge_acl_enforced(live_server):
 
     assert reads(settings.admin_token), "admin should read the issue through the OpenAPI bridge"
     assert not reads(user["token"]), f"{email} should be blocked from the issue via the bridge"
+
+
+# ------------------------------------------------------ Slack (generic OpenAPI→MCP bridge)
+
+def test_mcp_slack_bridge_acl_enforced(live_server):
+    """A message in an ACL-restricted Slack channel is found by admin search but not a scoped user."""
+    pytest.importorskip("fastmcp")
+    base, settings = live_server
+    user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
+    row, email = _restricted_doc(settings, user["token"], "slack")
+    assert row is not None, f"no Slack message is ACL-restricted from {email} in the sample corpus"
+
+    def finds(token):
+        try:
+            return asyncio.run(_call(
+                _bridge_params("slack", base, token),
+                tool_pred=lambda n: n.startswith("search_messages"),
+                args={"query": "reorg"},          # matches the restricted people-confidential message
+                ok_pred=lambda t: "headcount" in t))  # a word only the matched message carries
+        except Exception:  # noqa: BLE001
+            return False
+
+    assert finds(settings.admin_token), "admin search should surface the restricted message"
+    assert not finds(user["token"]), f"{email} search should not surface the restricted message"

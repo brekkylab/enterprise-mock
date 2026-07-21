@@ -18,7 +18,10 @@ service (like the other `examples/` dirs) — run the one you want:
   MCP server exists that can be pointed at a self-hosted mock, so instead the bridge turns the
   mock's own typed `/openapi.json` into MCP tools. See "How the OpenAPI→MCP bridge connects" below.
   This unlocks the sources with no base-URL-switchable vendor server; more sources
-  (Slack/Gmail/Drive) are being added the same way.
+  (Gmail/Drive) are being added the same way.
+- **`slack.py`** via the same **OpenAPI→MCP bridge** — no maintained Slack MCP server accepts a
+  base-URL override (they hard-wire `slack.com`), so the bridge serves the mock's Slack Web API
+  (`/slack/api/*`) as tools instead.
 
 Each service file builds its own MCP `StdioServerParameters` and calls `run_agent(...)`. Two shared
 helpers:
@@ -51,6 +54,7 @@ python -m pytest tests/test_mcp.py
 #   Notion:    admin reads an ACL-restricted page, an outsider is blocked
 #   S3:        admin lists bucket objects through a signed AWS CLI call
 #   GitHub:    admin reads an ACL-restricted issue via the bridge, a user token is blocked
+#   Slack:     admin search surfaces a restricted-channel message via the bridge, a user can't
 
 # drive it with an LLM agent (needs an API key). --agent defaults to anthropic; add --agent openai.
 ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/atlassian.py
@@ -58,6 +62,7 @@ ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/notion.py
 OPENAI_API_KEY=…    python examples/using-mcp-with-agents/notion.py --agent openai
 ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/s3.py
 ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/github.py   # via the OpenAPI→MCP bridge
+ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/slack.py    # via the OpenAPI→MCP bridge
 ```
 
 **Auth is per-service.** Retrieval is ACL-scoped by the identity you pass:
@@ -168,5 +173,6 @@ the OpenAPI→MCP bridge above exists (it needs no vendor server at all):
   port (so needs port 80), forces GitHub-Enterprise paths (`/api/v3`, `/api/graphql`), and
   relies on GraphQL the mock doesn't implement. **→ driven via the bridge (`github.py`) instead.**
 - **Slack** — no API-base override in any maintained server (hard-wired to `slack.com`).
+  **→ driven via the bridge (`slack.py`) instead.**
 - **Gmail / Google Drive** — official and community servers hard-wire `googleapis.com` and
   require real Google OAuth; no endpoint override.

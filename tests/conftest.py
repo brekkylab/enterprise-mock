@@ -56,6 +56,9 @@ SAMPLE = [
      "reactions": [{"name": "eyes", "count": 2, "users": ["U01", "U02"]}],
      "replies": [{"content": "Yeah, looking now.", "author_email": "ava@acme.com"},
                  {"content": "Rolled back; 502s clearing.", "author_email": "bob@acme.com"}]},
+    {"source_type": "slack", "channel": "people-confidential", "group": "people",
+     "content": "Confidential people-ops note: Q3 reorg headcount plan.",
+     "author_email": "hana@acme.com", "author_groups": ["people"], "visibility": "group"},
 
     {"source_type": "github", "doc_id": "gh-issue-1", "repo": "gateway", "group": "engineering",
      "title": "Rate limiter drops bursts under 50ms", "content": "Token-bucket refill is off by one tick.",

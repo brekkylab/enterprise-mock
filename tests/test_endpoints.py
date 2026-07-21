@@ -681,3 +681,29 @@ def test_github_operation_ids_unique(client):
            for p, item in spec["paths"].items() if p.startswith("/github")
            for m, op in item.items() if isinstance(op, dict) and "operationId" in op]
     assert len(ids) == len(set(ids))
+
+
+# --- OpenAPI enrichment: slack (query-or-form params via openapi_extra) -------------------
+
+def test_slack_search_documents_query_param(client):
+    op = client.get("/openapi.json").json()["paths"]["/slack/api/search.messages"]["get"]
+    names = {p["name"] for p in op.get("parameters", [])}
+    assert {"query", "count", "page"} <= names
+
+
+def test_slack_history_documents_channel_param(client):
+    op = client.get("/openapi.json").json()["paths"]["/slack/api/conversations.history"]["get"]
+    names = {p["name"] for p in op.get("parameters", [])}
+    assert {"channel", "limit", "cursor"} <= names
+
+
+def test_slack_responses_unchanged_by_enrichment(client, admin_h):
+    lst = client.get("/slack/api/conversations.list", headers=admin_h).json()
+    assert lst["ok"] and "channels" in lst and "response_metadata" in lst
+    if lst["channels"]:
+        ch = lst["channels"][0]
+        for k in ("id", "name", "is_private", "is_member", "num_members", "topic",
+                  "purpose", "created", "creator"):
+            assert k in ch, f"slack channel missing {k} (fidelity regression)"
+    srch = client.get("/slack/api/search.messages", params={"query": "gateway"}, headers=admin_h).json()
+    assert srch["ok"] and "messages" in srch and "matches" in srch["messages"]
