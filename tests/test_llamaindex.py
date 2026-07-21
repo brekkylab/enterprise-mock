@@ -83,7 +83,7 @@ def _slack_reader_at(base: str, token: str):
     import slack_sdk
     from llama_index.readers.slack import SlackReader
 
-    mocked_url = f"{base}/slack/api/"  # trailing slash required (base_url + method)
+    mocked_url = f"{base.rstrip('/')}/slack/api/"  # trailing slash required (base_url + method)
     real_web_client = slack_sdk.WebClient
 
     class _WebClientAtMock(real_web_client):

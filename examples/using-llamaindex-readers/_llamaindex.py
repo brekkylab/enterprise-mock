@@ -20,7 +20,12 @@ S3 `s3_endpoint_url`); four hardcode it and need a small shim, all isolated here
     `'build' in dir(llama_index.readers.google.gmail.base)` is `False`), so there is no
     `gm.build` module attribute to wrap; `point_gmail_at` wraps `googleapiclient.discovery.build`
     itself instead, one level up the chain (the local import re-reads whatever that symbol
-    currently is at call time, so this has the same effect).
+    currently is at call time, so this has the same effect). Credential wiring differs between
+    the two readers, though: `GoogleDriveReader` accepts `service_account_key=` directly, a real
+    injection hook, so the admin path needs no monkeypatch beyond `point_drive_at`; `GmailReader`
+    has no such hook — its `_get_credentials()` unconditionally runs a local disk-based OAuth
+    flow — so `gmail.py` additionally patches `GmailReader._get_credentials` to hand back the
+    mock-issued credential.
   - Notion: `patch_notion_at` rebinds the module-level URL constants.
 
 This module also re-exports the serve/credential helpers from the sibling

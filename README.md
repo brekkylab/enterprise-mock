@@ -233,6 +233,25 @@ mount as a real OS filesystem (macFUSE/fuse3) that any tool can `cat`/`grep`. (J
 and GitHub are out of scope — mirage has no Jira/Confluence connector, and its GitHub connector
 mirrors a repo's source-file tree rather than the issues/PRs the mock serves.)
 
+## Using LlamaIndex readers with the mock
+
+Point official [LlamaIndex readers](https://docs.llamaindex.ai/en/stable/module_guides/loading/connector/)
+(`llama-index-readers-*`) at the mock and load an enterprise corpus as `Document` objects — the
+first step of a LlamaIndex ingestion/RAG pipeline. GitHub, S3, Confluence, and Jira readers take a
+host override directly; Slack, Notion, Gmail, and Drive hardcode their host, so a small shim in
+`_llamaindex.py` redirects each:
+
+```python
+from llama_index.readers.github import GitHubIssuesClient
+GitHubIssuesClient(github_token=TOKEN, base_url="http://localhost:8000/github")
+
+from llama_index.readers.confluence import ConfluenceReader
+ConfluenceReader(base_url="http://localhost:8000/atlassian/wiki", cloud=False, api_token=TOKEN)
+```
+
+One runnable script per source (GitHub, S3, Confluence, Jira, Slack, Notion, Gmail, Drive) is in
+[`examples/using-llamaindex-readers/`](examples/using-llamaindex-readers/).
+
 ## Endpoints (read-only)
 
 | Prefix | Service | Endpoints |
