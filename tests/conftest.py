@@ -70,6 +70,10 @@ SAMPLE = [
               "labels": ["bug"],
               "reviews": [{"author_email": "ava@acme.com", "state": "APPROVED", "body": "LGTM."}]},
      "comments": [{"content": "Add a metric for dropped bursts?", "author_email": "ava@acme.com"}]},
+    {"source_type": "github", "doc_id": "gh-sec-1", "repo": "vault", "group": "people",
+     "title": "Rotate quarterly signing keys", "content": "Track key rotation for the people-ops vault.",
+     "author_email": "hana@acme.com", "author_groups": ["people"], "visibility": "group",
+     "meta": {"state": "open", "labels": ["security"]}},
 
     {"source_type": "jira", "doc_id": "jira-sev2", "project": "payments", "group": "payments",
      "title": "SEV2: checkout latency spike", "content": "p95 checkout latency jumped to 2.1s.",

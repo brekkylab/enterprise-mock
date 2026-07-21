@@ -172,3 +172,45 @@ def test_mcp_s3_lists_objects(live_server):
                              f"--endpoint-url {base}/s3"},
         ok_pred=lambda text: "runbooks/oncall.md" in text))
     assert out, "expected the SAMPLE eng-artifacts/runbooks/oncall.md key in the listing"
+
+
+# ------------------------------------------------------ GitHub (generic OpenAPI→MCP bridge)
+
+def _bridge_params(source: str, base: str, token: str, username: str | None = None):
+    """Run examples/.../\_bridge.py as a stdio MCP server. Like the other cases this drives the
+    real artifact (here executed as a subprocess *by path* — not imported, no sys.path hack)."""
+    import sys
+    from pathlib import Path
+
+    from mcp import StdioServerParameters
+
+    bridge = str(Path(__file__).resolve().parents[1]
+                 / "examples" / "using-mcp-with-agents" / "_bridge.py")
+    args = [bridge, "--source", source, "--base-url", base.rstrip("/"), "--token", token]
+    if username:
+        args += ["--username", username]
+    return StdioServerParameters(command=sys.executable, args=args)
+
+
+def test_mcp_github_bridge_acl_enforced(live_server):
+    """A GitHub issue the admin can read via the bridge's get_issue tool is 404 for a scoped user."""
+    pytest.importorskip("fastmcp")
+    base, settings = live_server
+    user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
+    row, email = _restricted_doc(settings, user["token"], "github")
+    assert row is not None, f"no GitHub issue is ACL-restricted from {email} in the sample corpus"
+    number = synth.github_number(row["doc_id"])
+    owner, repo = settings.org_name, row["repo"]
+
+    def reads(token):
+        try:
+            return asyncio.run(_call(
+                _bridge_params("github", base, token),
+                tool_pred=lambda n: n.startswith("get_issue"),
+                args={"owner": owner, "repo": repo, "number": number},
+                ok_pred=lambda t: '"number"' in t and '"title"' in t))
+        except Exception:  # noqa: BLE001 — a blocked read may surface as a tool error
+            return False
+
+    assert reads(settings.admin_token), "admin should read the issue through the OpenAPI bridge"
+    assert not reads(user["token"]), f"{email} should be blocked from the issue via the bridge"
