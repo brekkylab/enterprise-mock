@@ -165,6 +165,35 @@ def patch_s3fs_walk() -> None:
     S3FileSystem._walk = _walk
 
 
+def patch_notion_at(base_url: str) -> None:
+    """Redirect NotionPageReader at the mock. The reader hardcodes the Notion host in module-level
+    URL constants (no base_url arg); rebind every one that points at api.notion.com. Fails loudly
+    if the expected constants are gone (a reader upgrade), rather than hitting the real host."""
+    import llama_index.readers.notion.base as nb
+
+    base = base_url.rstrip("/")
+    overrides = {
+        "BLOCK_CHILD_URL_TMPL": base + "/v1/blocks/{block_id}/children",
+        "DATABASE_URL_TMPL": base + "/v1/databases/{database_id}/query",
+        "SEARCH_URL": base + "/v1/search",
+    }
+    patched = 0
+    for name, value in overrides.items():
+        if hasattr(nb, name):
+            setattr(nb, name, value)
+            patched += 1
+    # Catch any other hardcoded api.notion.com occurrence (e.g. single-page retrieval) the version
+    # may add, so nothing silently escapes to the real host.
+    for name in dir(nb):
+        val = getattr(nb, name)
+        if isinstance(val, str) and "api.notion.com" in val:
+            setattr(nb, name, val.replace("https://api.notion.com", base))
+            patched += 1
+    if patched == 0:
+        raise RuntimeError("patch_notion_at found no Notion URL constants to rebind — reader layout "
+                           "changed; update the shim before it silently hits api.notion.com")
+
+
 def drop_self_from_syspath(file: str) -> None:
     """Remove a script's own directory from sys.path so a file named `jira.py` / `github.py`
     doesn't shadow the third-party `jira` / `github` package it (transitively) imports."""

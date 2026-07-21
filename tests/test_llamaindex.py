@@ -177,3 +177,48 @@ def test_s3(live_server):
     docs = reader.load_data()
     assert docs, "expected at least one object Document"
     assert any("dashboards" in d.text for d in docs)  # SAMPLE s3-runbook body
+
+
+def _patch_notion_at(base_url: str) -> None:
+    """Redirect NotionPageReader at the mock. The reader hardcodes the Notion host in module-level
+    URL constants (no base_url arg); rebind every one that points at api.notion.com. Fails loudly
+    if the expected constants are gone (a reader upgrade), rather than hitting the real host.
+
+    Duplicated from `examples/using-llamaindex-readers/_llamaindex.py:patch_notion_at` (tests
+    don't import from examples)."""
+    import llama_index.readers.notion.base as nb
+
+    base = base_url.rstrip("/")
+    overrides = {
+        "BLOCK_CHILD_URL_TMPL": base + "/v1/blocks/{block_id}/children",
+        "DATABASE_URL_TMPL": base + "/v1/databases/{database_id}/query",
+        "SEARCH_URL": base + "/v1/search",
+    }
+    patched = 0
+    for name, value in overrides.items():
+        if hasattr(nb, name):
+            setattr(nb, name, value)
+            patched += 1
+    # Catch any other hardcoded api.notion.com occurrence (e.g. single-page retrieval) the version
+    # may add, so nothing silently escapes to the real host.
+    for name in dir(nb):
+        val = getattr(nb, name)
+        if isinstance(val, str) and "api.notion.com" in val:
+            setattr(nb, name, val.replace("https://api.notion.com", base))
+            patched += 1
+    if patched == 0:
+        raise RuntimeError("patch_notion_at found no Notion URL constants to rebind — reader layout "
+                           "changed; update the shim before it silently hits api.notion.com")
+
+
+def test_notion(live_server):
+    pytest.importorskip("llama_index.readers.notion")
+    from llama_index.readers.notion import NotionPageReader
+    from app import synth
+
+    base, admin = _base_token(live_server)
+    _patch_notion_at(f"{base}/notion")
+    reader = NotionPageReader(integration_token=admin)
+    docs = reader.load_data(page_ids=[synth.notion_id("nt-runbook")])
+    assert docs, "expected the runbook page as a Document"
+    assert any("Check dashboards" in d.text for d in docs)  # SAMPLE nt-runbook body, case-correct
