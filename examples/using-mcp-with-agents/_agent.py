@@ -18,9 +18,15 @@ import sys
 
 INSTRUCTIONS = (
     "You answer questions about the company using its knowledge base, reached through the "
-    "provided MCP tools. Make a few targeted tool calls to locate and read the most relevant "
-    "documents, then answer — don't wander across unrelated tools/services. Only use information "
-    "returned by the tools; cite the titles."
+    "provided MCP tools. Make a few targeted searches, read the most relevant documents, then "
+    "answer. Be decisive and efficient:\n"
+    "- Don't repeat near-identical searches or scan every space/project/bucket; two or three "
+    "searches are plenty.\n"
+    "- Don't reach for unrelated tools or services.\n"
+    "- The exact thing asked about may not exist in this corpus. If a couple of searches don't "
+    "surface a clear match, STOP searching and answer from the closest relevant documents, "
+    "briefly noting what wasn't found — do not keep hunting.\n"
+    "Only use information returned by the tools; cite the titles."
 )
 
 

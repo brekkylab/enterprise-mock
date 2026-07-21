@@ -28,7 +28,10 @@ exactly what that provider takes (e.g. `s3.py` takes `--access-key`/`--secret-ke
 `--url`; `atlassian.py` takes `--token`/`--username`). All accept `--url` and `--agent {anthropic,openai}`.
 
 Each example spins up its own small mock by default, or pass `--url` to use an already-running one
-(unreachable → it falls back to spinning up its own).
+(unreachable → it falls back to spinning up its own). Note the demo question is tuned to each
+example's own seed corpus; against a `--url` server holding *different* data it may have no exact
+match, so the agent answers from the closest documents and notes what's missing (it's told to be
+decisive rather than exhaustively hunt).
 
 ## Run
 
