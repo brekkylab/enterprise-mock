@@ -1,15 +1,15 @@
 # Enterprise Mock
 
 > **LocalStack for enterprise SaaS knowledge APIs.** Point your RAG/search connectors at
-> read-only mock **Slack, Gmail, Google Drive, GitHub, Jira, Confluence, and Notion** APIs — real
-> response shapes, real pagination, real per-document ACLs — entirely offline: no accounts,
-> no OAuth, no rate limits.
+> read-only mock **Slack, Gmail, Google Drive, GitHub, Jira, Confluence, Notion, and Amazon S3**
+> APIs — real response shapes, real pagination, real per-document ACLs — entirely offline: no
+> accounts, no OAuth, no rate limits.
 
 [![tests](https://github.com/brekkylab/enterprise-mock/actions/workflows/ci.yml/badge.svg)](https://github.com/brekkylab/enterprise-mock/actions/workflows/ci.yml)
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A **read-only** mock server that stands in for seven enterprise SaaS knowledge sources at once.
+A **read-only** mock server that stands in for eight enterprise SaaS knowledge sources at once.
 It speaks each service's real read API — the exact response shapes, pagination schemes, auth,
 and native permission endpoints their official SDKs expect — over a corpus **you** supply, so a
 RAG/search connector built on those SDKs can be exercised **end-to-end** without the live
@@ -103,12 +103,13 @@ corpus are in [`examples/bring-your-own-corpus/`](examples/bring-your-own-corpus
 (use it for a full crawl); a user token sees only documents that user's ACL permits.
 
 - Slack: `Authorization: Bearer <token>` (also accepts `?token=` / form `token`)
-- Gmail / Drive / GitHub: `Authorization: Bearer <token>`
+- Gmail / Drive / GitHub / Notion: `Authorization: Bearer <token>`
 - Jira / Confluence: HTTP Basic `email:<token>` (the token is the password)
+- S3: AWS SigV4 — the token isn't sent directly; a deterministic access-key/secret pair is derived from it (see `examples/using-official-sdk/s3.py`)
 
 To discover the tokens without opening `data/tokens.yaml`, hit **`GET /_mock/users`** — a
 mock-only directory of every user (email, name, token, groups) plus the `admin_token`. Pick a
-token, send it to any of the six APIs, and you get that user's ACL-filtered view — the easy way
+token, use it against any of these APIs, and you get that user's ACL-filtered view — the easy way
 to test per-user access. It hands out tokens in the clear (fine for a local test mock); disable
 with `MOCK_EXPOSE_TOKENS=false`.
 
@@ -165,6 +166,11 @@ build("drive", "v3", credentials=creds, client_options=ClientOptions(api_endpoin
 
 from notion_client import Client
 Client(auth=TOKEN, base_url="http://localhost:8000/notion")   # SDK appends /v1/ itself
+
+import boto3
+from botocore.config import Config
+boto3.client("s3", endpoint_url="http://localhost:8000/s3", aws_access_key_id=AK, aws_secret_access_key=SK,
+             region_name="us-east-1", config=Config(s3={"addressing_style": "path"}))
 ```
 
 A runnable, self-contained script per service is in [`examples/using-official-sdk/`](examples/using-official-sdk/).
@@ -172,11 +178,14 @@ A runnable, self-contained script per service is in [`examples/using-official-sd
 ## Using MCP with the mock
 
 Point an MCP server at the mock's base URL and an agent retrieves through it — the mock enforces
-the ACL for whatever token the MCP server authenticates with. Two servers are wired up in the
+the ACL for whatever token the MCP server authenticates with. Three servers are wired up in the
 examples: the community-official [`mcp-atlassian`](https://github.com/sooperset/mcp-atlassian)
-(Jira + Confluence, over Docker) and the **official**
+(Jira + Confluence, over Docker), the **official**
 [`@notionhq/notion-mcp-server`](https://github.com/makenotion/notion-mcp-server) (Notion, over
-`npx` — it takes a first-class `BASE_URL` override: `BASE_URL=http://localhost:8000/notion`).
+`npx` — it takes a first-class `BASE_URL` override: `BASE_URL=http://localhost:8000/notion`), and
+the **official** [`awslabs.aws-api-mcp-server`](https://github.com/awslabs/mcp/tree/main/src/aws-api-mcp-server)
+(S3, over `uvx` — it shells the AWS CLI, whose boto3 client honors a first-class
+`AWS_ENDPOINT_URL` override: `AWS_ENDPOINT_URL=http://localhost:8000/s3`).
 For example, connecting `mcp-atlassian` over stdio:
 
 ```python
@@ -203,9 +212,10 @@ Runnable agents (Anthropic + OpenAI) and setup notes are in [`examples/using-mcp
 
 [mirage](https://github.com/strukto-ai/mirage) mounts a SaaS backend as a **virtual
 filesystem** an agent reads with bash (`ls`, `cat`, `grep`, `find`). Point its
-Slack/Gmail/Drive/Notion resources at the mock and you can drive a mirage agent over your corpus
-offline. Slack and Notion expose a `base_url` config (point them straight at the mock); Google
-hardcodes `googleapis.com`, so a one-line helper redirects those constants at the mock:
+Slack/Gmail/Drive/Notion/S3 resources at the mock and you can drive a mirage agent over your
+corpus offline. Slack, Notion, and S3 expose `base_url`/`endpoint_url` config fields (point them
+straight at the mock — S3's `S3Config` also takes `path_style=True`); Google hardcodes
+`googleapis.com`, so a one-line helper redirects those constants at the mock:
 
 ```python
 from mirage import MountMode, Workspace
@@ -217,7 +227,7 @@ ws = Workspace({"/slack": SlackResource(SlackConfig(token=TOKEN))}, mode=MountMo
 await ws.execute("ls /slack/channels/")         # then cat a channel's dated chat.jsonl
 ```
 
-One runnable script per provider (Slack, Gmail, Drive, Notion) plus a `unified.py` that greps
+One runnable script per provider (Slack, Gmail, Drive, Notion, S3) plus a `unified.py` that greps
 across Slack/Gmail/Drive at once are in [`examples/using-mirage/`](examples/using-mirage/); add `--fuse` to expose a
 mount as a real OS filesystem (macFUSE/fuse3) that any tool can `cat`/`grep`. (Jira/Confluence
 and GitHub are out of scope — mirage has no Jira/Confluence connector, and its GitHub connector
@@ -235,6 +245,7 @@ mirrors a repo's source-file tree rather than the issues/PRs the mock serves.)
 | `/atlassian/rest/api/3` | Jira | `search/jql` (JQL `project =`, `text\|summary\|description ~`), `issue/{key}`, `issue/{key}/comment`, `field`, `issueLinkType`, `project/search`, `project/{key}/role[/{id}]` |
 | `/atlassian/wiki/rest/api` | Confluence | `content`, `content/{id}`, `content/{id}/restriction/byOperation`, `space`, `space/{key}/permission` |
 | `/notion/v1` | Notion | `search`, `pages/{id}`, `blocks/{id}`, `blocks/{id}/children`, `databases/{id}` (version-aware), `data_sources/{id}`, `data_sources/{id}/query`, `databases/{id}/query` (legacy), `users[/{id}]`, `users/me`, `comments` |
+| `/s3` | Amazon S3 | `ListBuckets`, `HeadBucket`, `GetBucketLocation`, `ListObjectsV2` (`prefix`/`delimiter`/continuation-token), `GetObject` (+`Range`), `HeadObject` |
 
 ## Tests
 
@@ -265,4 +276,9 @@ follow the org (`<org>.atlassian.net`, and the owner echoed from the request pat
 - Notion is **BYO-only** (not in EnterpriseRAG-Bench). A record's `content` is served verbatim as
   a synthesized block tree; `databases.retrieve` returns the `2025-09-03` data-sources shape by
   default and the `2022-06-28` inline-`properties` shape when that `Notion-Version` header is sent.
+- S3 is **BYO-only** (not in EnterpriseRAG-Bench). Requests are XML (not JSON) and SigV4-signed;
+  the mock verifies the signature against the access-key/secret derived from your bearer token
+  and only supports path-style addressing (the bucket stays in the path, not the hostname).
+  Read ops: `ListBuckets`, `HeadBucket`, `GetBucketLocation`, `ListObjectsV2`, `GetObject`
+  (+`Range`), `HeadObject`.
 - **Only read endpoints** are implemented.

@@ -1,6 +1,6 @@
 # Bring your own corpus
 
-Serve **any** document set through the seven mock APIs — provide a JSONL where each line is one
+Serve **any** document set through the eight mock APIs — provide a JSONL where each line is one
 document, validate it, and load it:
 
 ```bash
@@ -42,15 +42,15 @@ Slack** (Slack messages have no title). One JSON object per line (JSONL) — for
 
 See `sample_corpus.jsonl` for a fully-populated record of every source type.
 
-- `source_type` ∈ `slack | gmail | google_drive | github | jira | confluence | notion`.
+- `source_type` ∈ `slack | gmail | google_drive | github | jira | confluence | notion | s3`.
 - The grouping unit is named per service — `channel` (slack), `mailbox` (gmail),
   `folder` (google_drive), `repo` (github), `project` (jira), `space` (confluence),
-  `teamspace` (notion).
+  `teamspace` (notion), `bucket` (s3).
 - **ACL per doc:** `readers` (emails → users, other ids → groups) win; else `visibility`
   `public | group | private` (default `public`). Group membership is derived from each author's
   `author_groups` plus the grouping unit they wrote in.
 - Groups, users, and a per-user token for each are derived from the corpus and written to
-  `data/tokens.yaml` — the same token-scoped ACL then applies across all seven APIs and MCP.
+  `data/tokens.yaml` — the same token-scoped ACL then applies across all eight APIs and MCP.
 - **Org:** the org name + domain are inferred from the corpus's dominant author email domain
   (a `@acme.com` corpus serves as org `acme`, so Slack `auth.test`, `/_mock/users`, and default
   emails all say `acme` — not a hardcoded default). Override with `MOCK_ORG_NAME` /
