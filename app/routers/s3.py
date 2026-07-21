@@ -178,7 +178,7 @@ def _list_objects_v2(request: Request, conn, bucket: str, visible) -> Response:
                 f'<Contents><Key>{escape(val)}</Key>'
                 f'<LastModified>{synth.s3_iso(ts)}</LastModified>'
                 f'<ETag>{escape(synth.s3_etag(r["doc_id"], r["content"]))}</ETag>'
-                f'<Size>{r["size"] if r["size"] is not None else len(r["content"].encode())}</Size>'
+                f'<Size>{len(r["content"].encode())}</Size>'
                 f'<StorageClass>{escape(r["subtype"] or "STANDARD")}</StorageClass></Contents>')
     body.append('</ListBucketResult>')
     return _xml("".join(body))

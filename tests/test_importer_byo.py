@@ -274,7 +274,13 @@ S3_RECORDS = [
     {"source_type": "s3", "bucket": "eng-artifacts", "key": "secret/comp.txt",
      "title": "Comp", "content": "confidential", "author_email": "hana@acme.com",
      "author_groups": ["people"], "visibility": "group", "group": "people"},
+    # multibyte content: size must be the UTF-8 BYTE length, not the character count
+    {"source_type": "s3", "bucket": "eng-artifacts", "key": "notes/unicode.md",
+     "title": "Unicode", "content": "résumé ☕ dashboards", "content_type": "text/markdown",
+     "author_email": "ava@acme.com", "author_groups": ["engineering"], "visibility": "public"},
 ]
+
+_UNICODE_BODY = "résumé ☕ dashboards"
 
 
 def test_s3_byo_load(tmp_path):
@@ -282,11 +288,14 @@ def test_s3_byo_load(tmp_path):
     corpus.write_text("\n".join(json.dumps(r) for r in S3_RECORDS))
     settings = Settings(data_dir=tmp_path)
     res = load(corpus, settings)
-    assert res["counts"]["s3"] == 2
+    assert res["counts"]["s3"] == 3
     conn = store.connect_ro(settings.db_path)
     rows = {r["key"]: r for r in store.list_documents(conn, "s3", container="eng-artifacts")}
     assert rows["runbooks/oncall.md"]["content_type"] == "text/markdown"
     assert rows["runbooks/oncall.md"]["size"] == len("check dashboards, roll back, page on-call")
+    # size is the UTF-8 byte length, which is strictly greater than the character count here
+    assert rows["notes/unicode.md"]["size"] == len(_UNICODE_BODY.encode("utf-8"))
+    assert rows["notes/unicode.md"]["size"] != len(_UNICODE_BODY)
     assert store.get_container(conn, "s3", "eng-artifacts") is not None
     conn.close()
 
