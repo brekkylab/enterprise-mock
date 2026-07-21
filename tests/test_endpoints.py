@@ -535,7 +535,18 @@ def _sign_get(base_url, path, token, *, tamper=False, extra_headers=None):
     from botocore.auth import S3SigV4Auth
     from botocore.awsrequest import AWSRequest
     from botocore.credentials import Credentials
+    from urllib.parse import parse_qsl, quote, urlencode
     from app import synth
+
+    # URL-encode the path: split on ? to preserve the path part, then properly encode query params.
+    # Use quote_via=quote (not the default quote_plus) so a space becomes %20, matching the server's
+    # canonicalization (app.sigv4._canonical_query uses quote); quote_plus would emit '+' and mismatch.
+    if "?" in path:
+        path_part, query_part = path.split("?", 1)
+        params = parse_qsl(query_part, keep_blank_values=True)
+        query_part = urlencode(params, safe="-_.~", quote_via=quote)
+        path = f"{path_part}?{query_part}"
+
     ak = synth.s3_access_key_id(token)
     sk = synth.s3_secret_access_key(token)
     url = f"{base_url}{path}"
