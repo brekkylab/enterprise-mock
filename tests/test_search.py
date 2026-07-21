@@ -200,3 +200,16 @@ def test_fts_notion_acl_scoped(db, acl, tokens):
     assert store.count_search(db, "confidential", "notion", visible_ids=None) >= 1
     ava_ids = acl.visible_ids(db, acl.resolve(tokens["ava@acme.com"]))  # not in 'people'
     assert store.count_search(db, "confidential", "notion", visible_ids=ava_ids) == 0
+
+
+def test_fts_s3_search(db):
+    rows = store.search_documents(db, "dashboards", source_type="s3")
+    assert any(r["key"] == "runbooks/oncall.md" for r in rows)
+
+
+def test_fts_s3_acl_scoped(db, acl, tokens):
+    # the group-restricted object is invisible to a non-member (ava is engineering, not people).
+    # First assert it IS findable unfiltered, so the ==0 below proves ACL — not a vacuous no-match.
+    assert store.count_search(db, "band", source_type="s3", visible_ids=None) >= 1
+    ava_ids = acl.visible_ids(db, acl.resolve(tokens["ava@acme.com"]))
+    assert store.count_search(db, "band", source_type="s3", visible_ids=ava_ids) == 0
