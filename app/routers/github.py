@@ -10,7 +10,7 @@ import base64
 import hashlib
 import re
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 
 from app import auth, store, synth
@@ -92,13 +92,15 @@ def _issue_qual_match(row, quals: dict) -> bool:
 
 
 @router.get("/search/issues")
-async def search_issues(request: Request):
+async def search_issues(request: Request,
+                        q: str = Query("", description="Issues/PRs search query"),
+                        page: int | None = Query(None, ge=1),
+                        per_page: int | None = Query(None, ge=1)):
     """Issues-and-PRs search (GitHub `GET /search/issues`): free text over title+body (FTS)
     plus repo:/is:/state:/type:/label:/author: qualifiers, ACL-scoped to the caller."""
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    q = request.query_params.get("q", "") or ""
     free, quals = _parse_issue_q(q)
     container = None  # a repo: qualifier narrows to one repo
     for v in quals.get("repo", []):
@@ -110,7 +112,7 @@ async def search_issues(request: Request):
     else:
         cand = store.list_documents(conn, "github", container, ids, limit=10_000)
     matched = [r for r in cand if _issue_qual_match(r, quals)]
-    page, per_page = clamp_page(_int(request, "page"), _int(request, "per_page"),
+    page, per_page = clamp_page(page, per_page,
                                 get_settings().default_page_size, get_settings().max_page_size)
     start = (page - 1) * per_page
     ab = _api_base(request)
@@ -128,14 +130,16 @@ async def get_org(org: str, request: Request):
 
 
 @router.get("/orgs/{org}/repos")
-async def list_repos(org: str, request: Request):
+async def list_repos(org: str, request: Request,
+                     page: int | None = Query(None, ge=1),
+                     per_page: int | None = Query(None, ge=1)):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     repos = [r["name"] for r in store.list_containers(conn, "github")]
     if ids is not None:
         repos = [n for n in repos if store.count_documents(conn, "github", n, ids) > 0]
-    page, per_page = clamp_page(_int(request, "page"), _int(request, "per_page"),
+    page, per_page = clamp_page(page, per_page,
                                 get_settings().default_page_size, get_settings().max_page_size)
     start = (page - 1) * per_page
     ab = _api_base(request)
@@ -153,20 +157,22 @@ async def get_repo(owner: str, repo: str, request: Request):
 
 
 @router.get("/repos/{owner}/{repo}/issues")
-async def list_issues(owner: str, repo: str, request: Request):
+async def list_issues(owner: str, repo: str, request: Request,
+                      state: str = Query("open"),
+                      page: int | None = Query(None, ge=1),
+                      per_page: int | None = Query(None, ge=1)):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
     if store.get_container(conn, "github", repo) is None:
         raise HTTPException(status_code=404, detail="Not Found")
-    page, per_page = clamp_page(_int(request, "page"), _int(request, "per_page"),
+    page, per_page = clamp_page(page, per_page,
                                 get_settings().default_page_size, get_settings().max_page_size)
     total = store.count_documents(conn, "github", repo, ids)
     rows = store.list_documents(conn, "github", repo, ids, limit=per_page, offset=(page - 1) * per_page)
     # like the real API, /issues returns issues AND PRs (PRs carry a pull_request marker)
     ab = _api_base(request)
     body = [_issue_obj(conn, owner, repo, r, ab) for r in rows]
-    state = request.query_params.get("state", "open")
     return _paged(request, total, {"state": state}, body, page, per_page)
 
 
@@ -195,7 +201,10 @@ async def issue_comments(owner: str, repo: str, number: int, request: Request):
 
 
 @router.get("/repos/{owner}/{repo}/pulls")
-async def list_pulls(owner: str, repo: str, request: Request):
+async def list_pulls(owner: str, repo: str, request: Request,
+                     state: str = Query("open"),
+                     page: int | None = Query(None, ge=1),
+                     per_page: int | None = Query(None, ge=1)):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
@@ -203,13 +212,12 @@ async def list_pulls(owner: str, repo: str, request: Request):
         raise HTTPException(status_code=404, detail="Not Found")
     prs = [r for r in store.list_documents(conn, "github", repo, ids, limit=10_000)
            if r["kind"] == "pull_request"]
-    page, per_page = clamp_page(_int(request, "page"), _int(request, "per_page"),
+    page, per_page = clamp_page(page, per_page,
                                 get_settings().default_page_size, get_settings().max_page_size)
     start = (page - 1) * per_page
     ab = _api_base(request)
     body = [_pr_obj(conn, owner, repo, r, ab) for r in prs[start:start + per_page]]
-    return _paged(request, len(prs), {"state": request.query_params.get("state", "open")},
-                  body, page, per_page)
+    return _paged(request, len(prs), {"state": state}, body, page, per_page)
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}")
@@ -459,11 +467,3 @@ def _gh_comment(owner: str, repo: str, number: int, c, api_base: str = "") -> di
         "issue_url": f"{api_base}/repos/{owner}/{repo}/issues/{number}",
         "html_url": f"https://github.com/{owner}/{repo}/issues/{number}#issuecomment-{cid}",
     }
-
-
-def _int(request: Request, key: str) -> int | None:
-    v = request.query_params.get(key)
-    try:
-        return int(v) if v else None
-    except ValueError:
-        return None

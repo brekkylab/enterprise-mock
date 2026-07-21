@@ -635,3 +635,34 @@ def test_confluence_single_space_get(client, admin_h):
     # unknown space -> clean atlassian-shaped 404
     r2 = client.get("/atlassian/wiki/rest/api/space/NOSUCH", headers=admin_h)
     assert r2.status_code == 404 and "message" in r2.json()
+
+
+# --- OpenAPI enrichment: github query params + response fidelity (issue #4 bridge) --------
+
+def test_github_search_issues_documents_q_param(client):
+    op = client.get("/openapi.json").json()["paths"]["/github/search/issues"]["get"]
+    names = {p["name"] for p in op.get("parameters", [])}
+    assert {"q", "page", "per_page"} <= names
+
+
+def test_github_list_issues_documents_state_param(client):
+    op = client.get("/openapi.json").json()["paths"]["/github/repos/{owner}/{repo}/issues"]["get"]
+    params = {p["name"]: p for p in op.get("parameters", [])}
+    assert "state" in params and {"page", "per_page"} <= set(params)
+    assert params["state"]["schema"].get("default") == "open"
+
+
+def test_github_search_still_filters_by_q(client, admin_h):
+    body = client.get("/github/search/issues", params={"q": ""}, headers=admin_h).json()
+    assert "items" in body and "total_count" in body
+
+
+def test_github_responses_unchanged_by_enrichment(client, admin_h):
+    # Fidelity guard: the rich issue field set must survive query-param + response_model enrichment.
+    body = client.get("/github/search/issues", params={"q": ""}, headers=admin_h).json()
+    assert body["items"], "SAMPLE should have github issues"
+    item = body["items"][0]
+    for key in ("id", "node_id", "number", "title", "body", "state", "user", "labels",
+                "assignees", "milestone", "comments", "reactions", "author_association",
+                "created_at", "updated_at", "html_url", "url", "repository_url"):
+        assert key in item, f"missing {key} (fidelity regression)"
