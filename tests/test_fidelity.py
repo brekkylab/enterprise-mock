@@ -10,7 +10,6 @@ import urllib.request
 from datetime import datetime
 from xml.etree import ElementTree as ET
 
-import pytest
 from starlette.requests import Request
 
 from app import store

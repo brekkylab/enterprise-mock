@@ -257,9 +257,11 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
             grant_types = []
             for pid in readers:
                 if "@" in pid:
-                    grant_types.append(("user", pid)); users.setdefault(pid, _display_name(pid))
+                    grant_types.append(("user", pid))
+                    users.setdefault(pid, _display_name(pid))
                 else:
-                    grant_types.append(("group", pid)); groups.add(pid)
+                    grant_types.append(("group", pid))
+                    groups.add(pid)
         elif vis == "private" and author:
             grant_types = [("user", author)]
         elif vis == "group":
