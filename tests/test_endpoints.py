@@ -776,3 +776,40 @@ def test_drive_export_and_media_stay_non_json(client, admin_h):
     pdf = _drive_find(client, admin_h, "Whitepaper")
     med = client.get(f"/drive/v3/files/{pdf['id']}", params={"alt": "media"}, headers=admin_h)
     assert med.status_code == 200 and "application/json" not in med.headers["content-type"]
+
+
+# --- OpenAPI enrichment: notion -----------------------------------------------------------
+
+def test_notion_search_documents_body_param(client):
+    op = client.get("/openapi.json").json()["paths"]["/notion/v1/search"]["post"]
+    props = op["requestBody"]["content"]["application/json"]["schema"]["properties"]
+    assert "query" in props and "filter" in props
+
+
+def test_notion_users_documents_pagination(client):
+    op = client.get("/openapi.json").json()["paths"]["/notion/v1/users"]["get"]
+    names = {p["name"] for p in op.get("parameters", [])}
+    assert {"start_cursor", "page_size"} <= names
+
+
+def test_notion_page_has_typed_response_schema(client):
+    op = client.get("/openapi.json").json()["paths"]["/notion/v1/pages/{page_id}"]["get"]
+    assert op["responses"]["200"]["content"]["application/json"]["schema"] != {}
+
+
+def test_notion_responses_unchanged_by_enrichment(client, admin_h):
+    res = client.post("/notion/v1/search", json={}, headers=admin_h).json()
+    assert res["object"] == "list" and "results" in res
+    pages = [r for r in res["results"] if r.get("object") == "page"]
+    assert pages, "expected notion pages in search"
+    page = client.get(f"/notion/v1/pages/{pages[0]['id']}", headers=admin_h).json()
+    for k in ("object", "id", "created_time", "last_edited_time", "properties", "parent", "url"):
+        assert k in page, f"notion page missing {k} (fidelity regression)"
+    dbs = [r for r in res["results"] if r.get("object") == "database"]
+    if dbs:  # version-dependent database shape must survive both header values
+        did = dbs[0]["id"]
+        legacy = client.get(f"/notion/v1/databases/{did}",
+                            headers={**admin_h, "Notion-Version": "2022-06-28"}).json()
+        default = client.get(f"/notion/v1/databases/{did}",
+                             headers={**admin_h, "Notion-Version": "2025-09-03"}).json()
+        assert "properties" in legacy and "data_sources" in default

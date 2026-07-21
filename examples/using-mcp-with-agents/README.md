@@ -167,6 +167,19 @@ stdio (not streamable-HTTP): FastMCP's HTTP mode has a known bug forwarding the 
 per-user from `GET /_mock/users`). Adding a source is one `SOURCES` entry in `_bridge.py` plus a
 thin launcher — same "one entry per backend" shape as the vendor examples.
 
+**Notion and Atlassian** already have vendor-server launchers above, but they also work through the
+generic bridge (no vendor server) — run `_bridge.py` directly:
+
+```bash
+python examples/using-mcp-with-agents/_bridge.py --source notion    --base-url <mock> --token <t>
+python examples/using-mcp-with-agents/_bridge.py --source atlassian --base-url <mock> --token <t> --username svc@example.com
+```
+
+Atlassian authenticates with HTTP Basic (`--username` + the mock token as the password), and its
+`SOURCES` entry covers both the `/atlassian` (Jira) and `/wiki` (Confluence) path roots. **S3 is the
+one source with no bridge** — it is SigV4-signed (a static `Authorization` header can't sign each
+request); use the vendor `s3.py` example.
+
 ## Why not the other services
 
 Some services' vendor MCP servers **cannot** be pointed at a self-hosted mock — that is exactly why

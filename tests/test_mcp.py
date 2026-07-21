@@ -288,3 +288,29 @@ def test_mcp_drive_bridge_acl_enforced(live_server):
 
     assert reads(settings.admin_token), "admin should read the file through the bridge"
     assert not reads(user["token"]), f"{email} should be blocked from the file via the bridge"
+
+
+# ------------------------------------------------------ Notion (generic OpenAPI→MCP bridge)
+# Notion also has a vendor-server example (test_mcp_notion_acl_enforced); this proves the same
+# ACL additively through the generic bridge, with no vendor server.
+
+def test_mcp_notion_bridge_acl_enforced(live_server):
+    pytest.importorskip("fastmcp")
+    base, settings = live_server
+    user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
+    row, email = _restricted_doc(settings, user["token"], "notion", "subtype IS NOT 'database'")
+    assert row is not None, f"no Notion page is ACL-restricted from {email} in the sample corpus"
+    page_id = synth.notion_id(row["doc_id"])
+
+    def reads(token):
+        try:
+            return asyncio.run(_call(
+                _bridge_params("notion", base, token),
+                tool_pred=lambda n: n.startswith("get_page"),
+                args={"page_id": page_id},
+                ok_pred=lambda t: '"object": "page"' in t or '"object":"page"' in t))
+        except Exception:  # noqa: BLE001
+            return False
+
+    assert reads(settings.admin_token), "admin should read the page through the bridge"
+    assert not reads(user["token"]), f"{email} should be blocked from the page via the bridge"
