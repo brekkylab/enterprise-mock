@@ -65,30 +65,47 @@ def atlassian_base_url(base_url: str) -> str:
 
 
 def patch_s3fs_walk() -> None:
-    """Work around a fsspec/s3fs compatibility bug (reproduced with fsspec/s3fs 2026.6.0, the
-    latest release of both as of writing): `S3Reader.load_data()` in whole-bucket mode (no `key`)
-    calls `SimpleDirectoryReader._add_files`, which always does
+    """Work around a multi-year fsspec/s3fs compatibility bug (present since at least the
+    2023.x releases and reproducing on every version installable today, including fsspec/s3fs
+    2026.6.0): `S3Reader.load_data()` in whole-bucket mode (no `key`) calls
+    `SimpleDirectoryReader._add_files`, which always does
     `fs.walk(input_dir, topdown=True, maxdepth=...)`. The sync `AbstractFileSystem.walk` declares
     `topdown` as an explicit parameter (so it never reaches `ls`), but `S3FileSystem` is async and
-    inherits `AsyncFileSystem._walk`, which treats `topdown` as an opaque `**kwargs` entry and
-    forwards it straight through to `_ls()` — which doesn't accept it, raising
-    ``TypeError: S3FileSystem._ls() got an unexpected keyword argument 'topdown'``. This is a
-    client-side bug independent of the mock (reproduces identically against real AWS S3 with the
-    same library versions), so no mock-side change can fix it. Idempotent; safe to call more than
-    once or from multiple scripts in the same process."""
-    from fsspec.asyn import AsyncFileSystem
+    its `_walk` chain bottoms out in `AsyncFileSystem._walk`, which treats `topdown` as an opaque
+    `**kwargs` entry and forwards it straight through to `_ls()` — which doesn't accept it,
+    raising ``TypeError: S3FileSystem._ls() got an unexpected keyword argument 'topdown'``. This
+    is a client-side bug independent of the mock (reproduces identically against real AWS S3 with
+    the same library versions), so no mock-side change can fix it.
 
-    if getattr(AsyncFileSystem._walk, "_mock_patched", False):
+    Scoped to `S3FileSystem` only (not the shared `fsspec.asyn.AsyncFileSystem` base class) so
+    other async fsspec backends (gcsfs, adlfs, ...) are unaffected. Self-verifies against
+    `S3FileSystem._ls`'s signature first and no-ops if a future s3fs release has fixed the
+    signature to accept `topdown` (directly or via a `**kwargs` catch-all), so we never silently
+    drop a `topdown` a fixed s3fs would legitimately honor. Idempotent; safe to call more than
+    once or from multiple scripts in the same process."""
+    import inspect
+
+    from fsspec.asyn import AsyncFileSystem
+    from s3fs.core import S3FileSystem
+
+    if getattr(S3FileSystem._walk, "_mock_patched", False):
         return
-    _orig_walk = AsyncFileSystem._walk
+
+    ls_params = inspect.signature(S3FileSystem._ls).parameters
+    if "topdown" in ls_params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in ls_params.values()
+    ):
+        return  # upstream fixed; the topdown-stripping shim is no longer needed
 
     async def _walk(self, path, maxdepth=None, on_error="omit", **kwargs):
         kwargs.pop("topdown", None)
-        async for item in _orig_walk(self, path, maxdepth=maxdepth, on_error=on_error, **kwargs):
+        async for item in AsyncFileSystem._walk(
+            self, path, maxdepth=maxdepth, on_error=on_error, **kwargs
+        ):
             yield item
 
     _walk._mock_patched = True
-    AsyncFileSystem._walk = _walk
+    S3FileSystem._walk = _walk
 
 
 def drop_self_from_syspath(file: str) -> None:
