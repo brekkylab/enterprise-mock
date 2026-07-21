@@ -295,6 +295,8 @@ def _scope(sql: str, params: list, gcol: str, container: str | None, author_emai
 
 def list_documents(conn, source_type, container=None, visible_ids=None, limit=100,
                    offset=0, author_email=None, state=None) -> list[sqlite3.Row]:
+    # state: only valid for source_type="github" — it's the only items table with a `state`
+    # column; passing it for any other source_type raises sqlite3.OperationalError.
     tbl = table(source_type)
     sql = f"SELECT * FROM {tbl} WHERE 1=1"
     params: list = []
@@ -361,6 +363,8 @@ def drive_folder_has_visible(conn, folder, visible_ids=None) -> bool:
 
 def count_documents(conn, source_type, container=None, visible_ids=None, author_email=None,
                     state=None) -> int:
+    # state: only valid for source_type="github" — it's the only items table with a `state`
+    # column; passing it for any other source_type raises sqlite3.OperationalError.
     tbl = table(source_type)
     sql = f"SELECT COUNT(*) FROM {tbl} WHERE 1=1"
     params: list = []
