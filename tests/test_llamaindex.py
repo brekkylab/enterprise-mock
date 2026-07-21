@@ -47,6 +47,23 @@ def test_confluence(live_server):
     assert all("Compensation Bands" not in d.text for d in docs)  # cf-comp (people-ops) excluded
 
 
+def test_jira(live_server):
+    pytest.importorskip("llama_index.readers.jira")
+    from llama_index.readers.jira import JiraReader
+
+    base, admin = _base_token(live_server)
+    reader = JiraReader(PATauth={"server_url": f"{base}/atlassian", "api_token": admin})
+    docs = reader.load_data(query="project = payments")
+    assert docs, "expected at least one issue Document"
+    assert any("checkout latency" in d.text for d in docs)  # SAMPLE jira-sev2 body
+
+    # container scoping: an unresolvable project must yield zero issues, not the unfiltered
+    # corpus (the same silent-no-op fidelity gap found & fixed for Confluence's space= handling
+    # applied identically to Jira's project= handling -- see app/routers/atlassian.py).
+    empty = reader.load_data(query="project = NOPE_DOES_NOT_EXIST")
+    assert empty == []
+
+
 def _patch_s3fs_walk() -> None:
     """Work around a multi-year fsspec/s3fs compatibility bug (present since at least the
     2023.x releases and reproducing on every version installable today, including fsspec/s3fs

@@ -265,6 +265,43 @@ def test_github_pulls_filtered_by_state(client, admin_h, org):
     assert [p["title"] for p in all_body] == ["Fix token-bucket refill off-by-one"]
 
 
+def test_jira_serverinfo_v2_alias_matches_v3(client, admin_h):
+    # the `jira` PyPI client (used by llama-index's JiraReader) probes serverInfo under
+    # /rest/api/2 on connect; the mock must serve the same shape as the v3 handler.
+    v2 = client.get("/atlassian/rest/api/2/serverInfo", headers=admin_h).json()
+    v3 = client.get("/atlassian/rest/api/3/serverInfo", headers=admin_h).json()
+    assert v2 == v3
+    assert v2["deploymentType"] == "Cloud"
+
+
+def test_jira_search_filtered_by_project(client, admin_h):
+    from app import synth
+
+    # literal project name (a legitimate JQL project= token) narrows to that project's issues
+    by_name = client.get("/atlassian/rest/api/3/search/jql", headers=admin_h,
+                         params={"jql": "project = payments"}).json()
+    titles = {i["fields"]["summary"] for i in by_name["issues"]}
+    assert titles == {"SEV2: checkout latency spike", "Write postmortem for the SEV2",
+                       "Personal task: rotate my API keys"}
+
+    # the synthesized (hash-suffixed) project key resolves to the same project
+    synth_key = synth.jira_project_key("payments")
+    by_key = client.get("/atlassian/rest/api/3/search/jql", headers=admin_h,
+                        params={"jql": f"project = {synth_key}"}).json()
+    assert {i["fields"]["summary"] for i in by_key["issues"]} == titles
+
+    # an unresolvable project is strict: zero results, not the unfiltered corpus
+    bogus = client.get("/atlassian/rest/api/3/search/jql", headers=admin_h,
+                       params={"jql": "project = BOGUS_NOPE"}).json()
+    assert bogus["issues"] == [] and bogus["isLast"] is True
+
+    # no project clause at all -> unfiltered (same three issues here, since payments is the
+    # only Jira project in the SAMPLE corpus -- the earlier assertions are what prove filtering,
+    # not this equality)
+    unfiltered = client.get("/atlassian/rest/api/3/search/jql", headers=admin_h).json()
+    assert {i["fields"]["summary"] for i in unfiltered["issues"]} == titles
+
+
 def test_confluence_content_filtered_by_space_key(client, admin_h):
     from app import synth
 

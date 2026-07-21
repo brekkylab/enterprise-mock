@@ -20,7 +20,8 @@ from pathlib import Path
 
 # Reuse the official-SDK examples' mock plumbing rather than duplicating it.
 _SDK_DIR = Path(__file__).resolve().parent.parent / "using-official-sdk"
-if str(_SDK_DIR) not in sys.path:
+_inserted_sdk_dir = str(_SDK_DIR) not in sys.path
+if _inserted_sdk_dir:
     sys.path.insert(0, str(_SDK_DIR))
 
 from _mockserver import (  # noqa: E402
@@ -28,6 +29,16 @@ from _mockserver import (  # noqa: E402
     google_service_account_info,
     serve_or_connect,
 )
+
+# `using-official-sdk/` holds same-named sibling scripts (jira.py, github.py, s3.py, ...). Leaving
+# that dir on sys.path after the import above would let a later `from jira import JIRA` inside a
+# llama-index reader's __init__ (e.g. JiraReader) resolve to `using-official-sdk/jira.py` instead
+# of the real PyPI `jira` package. Nothing here needs the dir past the `_mockserver` import above,
+# so drop it immediately rather than leaving a shadow trap for every subsequent import in the
+# process (mirrors `drop_self_from_syspath`, but for a directory this module — not the caller —
+# inserted).
+if _inserted_sdk_dir:
+    sys.path.remove(str(_SDK_DIR))
 
 __all__ = [
     "serve_or_connect", "google_oauth_user", "google_service_account_info",

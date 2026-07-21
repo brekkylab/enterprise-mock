@@ -40,11 +40,25 @@ def _adf(content: str) -> dict:
             "content": [{"type": "paragraph", "content": [{"type": "text", "text": p}]} for p in paras]}
 
 
-def _jira_container_for_key(conn, project_key: str) -> str | None:
+def _jira_container_for_key(conn, token: str) -> str | None:
+    """Resolve a JQL project token to its backing container. Matches either the synthesized
+    project key (``PAY3F9A2C``, case-insensitive) or the literal container name (e.g.
+    ``payments``, case-insensitive) — real Jira project pickers accept both key and name.
+    Anything else is unresolvable -> None (callers must treat this as "0 results", never
+    silently fall back to the unfiltered corpus)."""
     for r in store.list_containers(conn, "jira"):
-        if synth.jira_project_key(r["name"]) == project_key:
+        if synth.jira_project_key(r["name"]) == token.upper() or r["name"].lower() == token.lower():
             return r["name"]
     return None
+
+
+@router.get("/rest/api/2/serverInfo")  # jira PyPI client probes this on connect
+@router.get("/rest/api/3/serverInfo")
+async def jira_server_info(request: Request):
+    site = _site(request)
+    return {"baseUrl": site, "version": "1000.0.0", "deploymentType": "Cloud",
+            "versionNumbers": [1000, 0, 0], "buildNumber": 100000,
+            "serverTime": synth.rfc3339_millis(synth.epoch("serverInfo"))}
 
 
 @router.get("/rest/api/3/project/search")
@@ -97,6 +111,10 @@ async def jira_search(request: Request):
             pass
     jql = str(params.get("jql", ""))
     container = _project_from_jql(conn, jql)
+    if container is _JIRA_PROJECT_UNRESOLVED:
+        # a project= clause was present but didn't match any project: strict 0 matches, not
+        # the unfiltered corpus.
+        return {"issues": [], "isLast": True}
     term = _text_from_jql(jql)
     limit = _int(params.get("maxResults"), get_settings().default_page_size)
     offset = decode_cursor(params.get("nextPageToken"))
@@ -195,11 +213,19 @@ async def jira_fields(request: Request):
     return _JIRA_FIELDS
 
 
-def _project_from_jql(conn, jql: str) -> str | None:
+# sentinel: the JQL carried a `project = X` clause that didn't resolve to any known project.
+# Distinct from `None` (no project clause at all -> no filter), so callers never silently
+# collapse "unresolvable" into "unfiltered" (the fidelity gap found & fixed for Confluence's
+# space= handling applies identically to Jira's project= handling).
+_JIRA_PROJECT_UNRESOLVED = object()
+
+
+def _project_from_jql(conn, jql: str):
     m = re.search(r"project\s*=\s*[\"']?([A-Za-z0-9_]+)", jql)
     if not m:
         return None
-    return _jira_container_for_key(conn, m.group(1).upper())
+    container = _jira_container_for_key(conn, m.group(1))
+    return container if container is not None else _JIRA_PROJECT_UNRESOLVED
 
 
 def _text_from_jql(jql: str) -> str | None:
