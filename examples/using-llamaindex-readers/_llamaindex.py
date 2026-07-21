@@ -4,7 +4,15 @@ Each `llama-index-readers-*` package normally targets a real SaaS host. Four acc
 host via constructor args (GitHub `base_url`, Jira `PATauth.server_url`, Confluence `base_url`,
 S3 `s3_endpoint_url`); four hardcode it and need a small shim, all isolated here:
 
-  - Slack: set `reader._client.base_url` after construction (slack_sdk builds `base_url + method`).
+  - Slack: `slack_reader_at` builds the reader with the underlying slack_sdk `WebClient` already
+    pointed at the mock. `SlackReader.__init__` doesn't just stash the client — it eagerly calls
+    `client.api_test()` *during construction*, before the caller has a `reader._client` to set
+    `base_url` on, so "construct, then set `_client.base_url`" alone isn't enough: that eager
+    call would hit the real `https://slack.com/api/` default first. `slack_reader_at` swaps the
+    `slack_sdk` module's `WebClient` for a subclass defaulting to the mock's base_url for the
+    duration of construction (restored after), so even that first call lands on the mock (which
+    now serves `api.test`, see `app/routers/slack.py`) — then sets `_client.base_url` again
+    explicitly, since slack_sdk builds request URLs as `base_url + method`.
   - Gmail/Drive: `point_gmail_at` / `point_drive_at` wrap the reader module's `build` symbol to
     inject `client_options(api_endpoint=...)` + `static_discovery=True` (as the SDK examples do).
   - Notion: `patch_notion_at` rebinds the module-level URL constants.
@@ -42,7 +50,7 @@ if _inserted_sdk_dir:
 
 __all__ = [
     "serve_or_connect", "google_oauth_user", "google_service_account_info",
-    "slack_base_url", "notion_base_url", "s3_base_url", "github_base_url",
+    "slack_base_url", "slack_reader_at", "notion_base_url", "s3_base_url", "github_base_url",
     "atlassian_base_url", "drop_self_from_syspath",
     "point_gmail_at", "point_drive_at", "patch_notion_at", "patch_s3fs_walk",
 ]
@@ -52,6 +60,38 @@ def slack_base_url(base_url: str) -> str:
     """Slack Web API base for `reader._client.base_url` — trailing slash required (slack_sdk
     builds request URLs as `base_url + method`, e.g. `conversations.history`)."""
     return f"{base_url.rstrip('/')}/slack/api/"
+
+
+def slack_reader_at(base_url: str, token: str):
+    """Build a `SlackReader` with its `WebClient` pointed at the mock from the very first call.
+
+    `SlackReader.__init__` eagerly calls `client.api_test()` before returning, using whatever
+    `base_url` the client was constructed with (there's no constructor arg to pass one in). Left
+    alone that call goes to the real `https://slack.com/api/` default. `SlackReader.__init__`
+    does a *local* `from slack_sdk import WebClient` on every call, so temporarily swapping the
+    `slack_sdk` module's `WebClient` attribute for a subclass that defaults `base_url` to the
+    mock — for the duration of this one construction only, restored in `finally` — redirects
+    that eager call to the mock instead. `reader._client.base_url` is set again explicitly
+    afterward for clarity, though the patched default already applied it.
+    """
+    import slack_sdk
+    from llama_index.readers.slack import SlackReader
+
+    mocked_url = slack_base_url(base_url)
+    real_web_client = slack_sdk.WebClient
+
+    class _WebClientAtMock(real_web_client):
+        def __init__(self, *args, **kwargs):
+            kwargs.setdefault("base_url", mocked_url)
+            super().__init__(*args, **kwargs)
+
+    slack_sdk.WebClient = _WebClientAtMock
+    try:
+        reader = SlackReader(slack_token=token)
+    finally:
+        slack_sdk.WebClient = real_web_client
+    reader._client.base_url = mocked_url
+    return reader
 
 
 def notion_base_url(base_url: str) -> str:

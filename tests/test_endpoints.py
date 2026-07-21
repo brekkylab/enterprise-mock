@@ -415,6 +415,16 @@ def test_unauthenticated_is_rejected(client):
     assert slack == {"ok": False, "error": "not_authed"}
 
 
+def test_slack_api_test_requires_no_auth(client):
+    # real Slack's api.test needs no token at all (it's a bare connectivity check); several real
+    # clients call it at construction/connect time (e.g. llama-index's SlackReader.__init__), so
+    # the mock must answer 200 without auth rather than 404/not_authed.
+    ok = client.post("/slack/api/api.test", data={"foo": "bar"}).json()
+    assert ok == {"ok": True, "args": {"foo": "bar"}}
+    err = client.post("/slack/api/api.test", data={"error": "boom"}).json()
+    assert err == {"ok": False, "error": "boom"}
+
+
 def test_slack_accepts_form_field_token(client, tokens):
     # the official slack-go SDK posts the token as a form field (no bearer header); the mock
     # must accept it exactly like a real Slack Web API.

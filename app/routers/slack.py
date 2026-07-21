@@ -83,6 +83,23 @@ def _user_obj(conn, email: str) -> dict:
     }
 
 
+@router.api_route("/api.test", methods=["GET", "POST"])
+async def api_test(request: Request):
+    """Real Slack's connectivity check — no auth required, echoes back any params other than
+    `error` (which flips the response to an error envelope carrying that value). Several real
+    clients call this at construction/connect time (e.g. llama-index's `SlackReader.__init__`),
+    so the mock must answer it rather than 404 — a 404 there breaks reader construction entirely,
+    before the caller ever gets a chance to point it at the mock."""
+    error = _param(request, "error")
+    if error:
+        return _err(error)
+    args = dict(request.query_params)
+    form = getattr(request.state, "_form", None)
+    if form:
+        args.update(form)
+    return {"ok": True, "args": args}
+
+
 @router.api_route("/auth.test", methods=["GET", "POST"])
 async def auth_test(request: Request):
     caller = _caller(request)

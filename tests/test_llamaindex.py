@@ -64,6 +64,54 @@ def test_jira(live_server):
     assert empty == []
 
 
+def _slack_reader_at(base: str, token: str):
+    """Build a `SlackReader` pointed at the mock.
+
+    `SlackReader.__init__` doesn't just stash the slack_sdk `WebClient` — it eagerly calls
+    `client.api_test()` *during construction*, before the caller gets any object back to set
+    `_client.base_url` on. Left alone, that call goes to the real `https://slack.com/api/`
+    default, so "set base_url after construction" (as the interface note says, and as slack_sdk's
+    own `WebClient(base_url=...)` constructor arg would suggest) can't work here: construction
+    itself fails/network-egresses first. `SlackReader.__init__` does a *local*
+    `from slack_sdk import WebClient` on every call, so temporarily swapping the `slack_sdk`
+    module's `WebClient` attribute for a subclass that defaults to the mock's base_url — for the
+    duration of construction only — redirects that eager call to the mock instead (which now
+    serves `api.test`, see `app/routers/slack.py`). Restored in `finally` so nothing leaks past
+    this one construction. Duplicated from `examples/using-llamaindex-readers/slack.py` (tests
+    don't import from examples).
+    """
+    import slack_sdk
+    from llama_index.readers.slack import SlackReader
+
+    mocked_url = f"{base}/slack/api/"  # trailing slash required (base_url + method)
+    real_web_client = slack_sdk.WebClient
+
+    class _WebClientAtMock(real_web_client):
+        def __init__(self, *args, **kwargs):
+            kwargs.setdefault("base_url", mocked_url)
+            super().__init__(*args, **kwargs)
+
+    slack_sdk.WebClient = _WebClientAtMock
+    try:
+        reader = SlackReader(slack_token=token)
+    finally:
+        slack_sdk.WebClient = real_web_client
+    reader._client.base_url = mocked_url  # already set via the patched default; explicit for clarity
+    return reader
+
+
+def test_slack(live_server):
+    pytest.importorskip("llama_index.readers.slack")
+
+    base, admin = _base_token(live_server)
+    reader = _slack_reader_at(base, admin)
+    channels = reader._client.conversations_list(limit=200)["channels"]
+    ids = [c["id"] for c in channels]
+    docs = reader.load_data(channel_ids=ids)
+    assert docs, "expected at least one channel Document"
+    assert any("502" in d.text for d in docs)  # SAMPLE incidents channel
+
+
 def _patch_s3fs_walk() -> None:
     """Work around a multi-year fsspec/s3fs compatibility bug (present since at least the
     2023.x releases and reproducing on every version installable today, including fsspec/s3fs
