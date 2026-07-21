@@ -1,15 +1,20 @@
 # Using MCP tools with agents
 
 Drive an LLM agent that retrieves corpus data through a **real MCP server** pointed at the
-mock, with retrieval **ACL-scoped** by the token you give it. Two servers are wired up:
+mock, with retrieval **ACL-scoped** by the token you give it. Three servers are wired up:
 
 - **Atlassian** (Jira + Confluence) via the community-official
   [`mcp-atlassian`](https://github.com/sooperset/mcp-atlassian) (Docker).
 - **Notion** via the **official**
   [`@notionhq/notion-mcp-server`](https://github.com/makenotion/notion-mcp-server) (npx/Node) —
   it takes a first-class `BASE_URL` override, so pointing it at the mock is one env var.
+- **S3** via the **official**
+  [`awslabs.aws-api-mcp-server`](https://github.com/awslabs/mcp/tree/main/src/aws-api-mcp-server)
+  (uvx/Python) — it shells the AWS CLI, whose boto3 client honors a first-class
+  `AWS_ENDPOINT_URL` override and SigV4-signs every call, so pointing it at the mock is a
+  handful of env vars; it's a broad AWS-CLI wrapper, so the agent runs `aws s3api …` commands.
 
-Pick one with `--server {atlassian,notion}` — **required** (there is no default).
+Pick one with `--server {atlassian,notion,s3}` — **required** (there is no default).
 
 | File | What it is |
 |---|---|
@@ -27,17 +32,19 @@ server — lives once in `_servers.py`, so adding a backend is one entry there.
 
 ```bash
 pip install -e ".[mcp]"          # mcp + openai-agents + anthropic[mcp]
-                                 # Atlassian needs Docker; Notion needs Node (npx)
+                                 # Atlassian needs Docker; Notion needs Node (npx); S3 needs uvx
 
 # prove retrieval + ACL end-to-end through the real MCP servers — no API key needed.
-# One file, one test per backend (each skips if its runtime — Docker / npx — is absent):
+# One file, one test per backend (each skips if its runtime — Docker / npx / uvx — is absent):
 python -m pytest tests/test_mcp.py
 #   Atlassian: admin reads an ACL-restricted Jira issue, a user token is blocked
 #   Notion:    admin reads an ACL-restricted page, an outsider is blocked
+#   S3:        admin lists bucket objects through a signed AWS CLI call
 
-# drive it with an LLM agent (needs an API key). --server is required (atlassian | notion).
+# drive it with an LLM agent (needs an API key). --server is required (atlassian | notion | s3).
 OPENAI_API_KEY=…    python examples/using-mcp-with-agents/agent_openai.py --server notion
 ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/agent_anthropic.py --server atlassian
+ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/agent_anthropic.py --server s3
 ```
 
 Each agent spins up its own small mock by default, or pass `--url` to use an already-running one
@@ -76,6 +83,24 @@ straight to its HTTP client, so the notion backend just sets:
 - `NOTION_TOKEN=<mock token>` — sent as `Authorization: Bearer …`; the mock resolves it to a user
   and enforces that user's ACL.
 - `NOTION_VERSION=2025-09-03` — the mock's default (data-sources model).
+
+## How the S3 backend connects (`_servers.py`)
+
+`awslabs.aws-api-mcp-server` shells the AWS CLI (botocore underneath), which takes a first-class
+endpoint override, so the s3 backend just sets:
+
+- `AWS_ENDPOINT_URL=<mock>/s3` — every AWS CLI call the server runs is routed at the mock instead
+  of real AWS.
+- `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` — derived from the mock token via
+  `app.synth.s3_access_key_id` / `s3_secret_access_key` (the same derivation the mock's SigV4
+  verifier uses), so botocore's signature resolves back to that token's identity and the mock
+  enforces that user's ACL.
+- `AWS_REGION=us-east-1` — any region works (the mock's verifier reads the region back out of the
+  client's own credential scope); this just has to be *some* valid region.
+- `READ_OPERATIONS_ONLY=true` — the server refuses to run mutating AWS CLI commands.
+
+Note this server is a **broad AWS-CLI wrapper**, not S3-specific — under the hood the agent runs
+`aws s3api …` commands (e.g. `list-objects-v2`, `get-object`) via the server's `call_aws` tool.
 
 ## Why not the other services
 

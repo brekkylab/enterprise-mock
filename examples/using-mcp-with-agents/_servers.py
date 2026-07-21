@@ -5,7 +5,7 @@ mock, a demo ``question``, and ``params(base_url, token, username)`` returning t
 ``StdioServerParameters`` that point the real MCP server at the mock. Pick one with
 ``--server <name>`` (see :func:`select`).
 
-Two backends ship:
+Three backends ship:
 
 - **atlassian** — the community-official `mcp-atlassian` (Jira + Confluence), run in **Docker**.
   It only classifies a host as Atlassian *Cloud* (the v3 + `/wiki` shape the mock speaks) when the
@@ -17,6 +17,9 @@ Two backends ship:
 - **notion** — the **official** `@notionhq/notion-mcp-server`, run via **npx** (Node). It takes a
   first-class `BASE_URL` override, so pointing it at the mock is one env var and a local
   `localhost` mock is reached directly (no Docker/host-gateway tricks).
+- **s3** — the **official** `awslabs.aws-api-mcp-server`, run via **uvx** (Python). It shells the
+  AWS CLI, whose boto3 client honors a first-class `AWS_ENDPOINT_URL` override and SigV4-signs
+  every call, so pointing it at the mock is a handful of env vars — no Docker/host-gateway tricks.
 """
 from __future__ import annotations
 
@@ -44,6 +47,15 @@ _NOTION_CORPUS = [
      "title": "On-call Runbook: checkout latency & bad deploys",
      "content": "# On-call\n\nWhen a deploy or migration spikes checkout latency: check the "
                 "payments dashboards, roll back the last change, and page the on-call engineer."},
+]
+_S3_CORPUS = [
+    {"source_type": "s3", "bucket": "payments", "key": "incidents/sev2.md",
+     "title": "SEV2: checkout latency spike",
+     "content": "p95 checkout latency jumped to 2.1s after the payments migration; rolling back."},
+    {"source_type": "s3", "bucket": "runbooks", "key": "oncall/checkout.md",
+     "title": "On-call Runbook: checkout latency & bad deploys",
+     "content": "When a deploy or migration spikes checkout latency: check the payments "
+                "dashboards, roll back the last change, and page the on-call engineer."},
 ]
 _QUESTION = ("Find the incident about checkout latency and summarize it, then find the on-call "
              "runbook. Cite the titles.")
@@ -101,6 +113,24 @@ def _notion_params(base_url: str, token: str, username: str | None):
              "NOTION_VERSION": "2025-09-03"})
 
 
+def _s3_params(base_url: str, token: str, username: str | None):
+    """`uvx` args pointing the awslabs aws-api MCP server at the mock via AWS_ENDPOINT_URL.
+
+    The server shells the AWS CLI, whose boto3 SigV4-signs each call; the mock verifies the
+    signature against the access-key/secret derived from ``token`` (a mock bearer token from
+    GET /_mock/users, or the admin token). READ_OPERATIONS_ONLY keeps it read-only."""
+    from mcp import StdioServerParameters
+
+    from app import synth
+
+    return StdioServerParameters(
+        command="uvx", args=["awslabs.aws-api-mcp-server@latest"],
+        env={"AWS_ENDPOINT_URL": f"{base_url.rstrip('/')}/s3",
+             "AWS_ACCESS_KEY_ID": synth.s3_access_key_id(token),
+             "AWS_SECRET_ACCESS_KEY": synth.s3_secret_access_key(token),
+             "AWS_REGION": "us-east-1", "READ_OPERATIONS_ONLY": "true"})
+
+
 @dataclass(frozen=True)
 class Backend:
     name: str
@@ -116,6 +146,7 @@ class Backend:
 BACKENDS = {
     "atlassian": Backend("atlassian", _ATLASSIAN_CORPUS, _QUESTION, _atlassian_params),
     "notion": Backend("notion", _NOTION_CORPUS, _QUESTION, _notion_params),
+    "s3": Backend("s3", _S3_CORPUS, _QUESTION, _s3_params),
 }
 
 
