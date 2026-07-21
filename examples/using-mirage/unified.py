@@ -4,22 +4,22 @@ value: many backends, one set of bash commands. Self-contained: run it directly.
 
     pip install -e ".[examples,mirage]"
     python examples/using-mirage/unified.py                                # local throwaway mock
-    python examples/using-mirage/unified.py --url http://localhost:8000 --user ava@acme.com
+    python examples/using-mirage/unified.py --url http://localhost:8000 --token xoxb-... --user ava@acme.com
     python examples/using-mirage/unified.py --fuse                          # all three as one OS mount
 
 Slack is ACL-filtered by ``--token``; Gmail/Drive by ``--user`` (they share one Google
 authorized-user credential). Point them all at the same mock.
 """
+import argparse
 import os
 import subprocess
-import sys
 
 from mirage import MountMode, Workspace
 from mirage.resource.gdrive import GoogleDriveConfig, GoogleDriveResource
 from mirage.resource.gmail import GmailConfig, GmailResource
 from mirage.resource.slack import SlackConfig, SlackResource
 
-from _mirage import (FUSE_HELP, cli_token, google_oauth_user, lines, point_google_at,
+from _mirage import (FUSE_HELP, google_oauth_user, lines, point_google_at,
                      run_mirage, serve_or_connect, slack_base_url)
 
 # One term — "Q1" — deliberately threads through all three sources.
@@ -69,13 +69,12 @@ async def _first_drive_file(ws):
     return f"/gdrive/{folders[0]}/{files[0]}" if files else None
 
 
-def build(mock) -> dict:
+def build(mock, token, user) -> dict:
     point_google_at(mock.base_url)  # Google has no host config; Slack takes base_url below
-    client_id, client_secret, refresh_token, _ = google_oauth_user(mock.base_url)
+    client_id, client_secret, refresh_token, _ = google_oauth_user(mock.base_url, user)
     google = dict(client_id=client_id, client_secret=client_secret, refresh_token=refresh_token)
     return {  # three backends, one filesystem
-        "/slack": SlackResource(SlackConfig(token=cli_token(mock.token),
-                                            base_url=slack_base_url(mock.base_url))),
+        "/slack": SlackResource(SlackConfig(token=token, base_url=slack_base_url(mock.base_url))),
         "/gmail": GmailResource(GmailConfig(**google)),
         "/gdrive": GoogleDriveResource(GoogleDriveConfig(**google)),
     }
@@ -126,10 +125,20 @@ def main_fuse(resources: dict) -> None:
         raise SystemExit(FUSE_HELP.format(err=e))
 
 
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Read Slack + Gmail + Drive through mirage against the mock.")
+    p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+    p.add_argument("--token", help="Slack: mock bearer token from GET /_mock/users (default: admin)")
+    p.add_argument("--user", help="Gmail/Drive: which user's Google OAuth token to use (default: the first user)")
+    p.add_argument("--fuse", action="store_true", help="mount as a real FUSE filesystem (needs macFUSE/fuse3)")
+    return p.parse_args()
+
+
 if __name__ == "__main__":
-    with serve_or_connect(CORPUS) as mock:
-        resources = build(mock)
-        if "--fuse" in sys.argv:
+    args = _parse_args()
+    with serve_or_connect(CORPUS, url=args.url) as mock:
+        resources = build(mock, args.token or mock.token, args.user)
+        if args.fuse:
             main_fuse(resources)
         else:
             run_mirage(main(resources))

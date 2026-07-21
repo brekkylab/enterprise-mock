@@ -16,15 +16,14 @@ it straight at the mock — no monkeypatch (unlike Google). mirage sends ``Notio
 With ``--fuse`` the tree is exposed as an actual filesystem (needs macFUSE/fuse3) and read with
 plain ``os``/shell tools; otherwise it's driven in-process via ``ws.execute``.
 """
+import argparse
 import os
 import subprocess
-import sys
 
 from mirage import MountMode, Workspace
 from mirage.resource.notion import NotionConfig, NotionResource
 
-from _mirage import (FUSE_HELP, cli_token, lines, notion_base_url, run_mirage,
-                     serve_or_connect)
+from _mirage import FUSE_HELP, lines, notion_base_url, run_mirage, serve_or_connect
 
 CORPUS = [
     {"source_type": "notion", "teamspace": "engineering", "title": "On-call Runbook",
@@ -39,11 +38,10 @@ CORPUS = [
 ]
 
 
-def build(mock):
+def build(mock, token):
     # Notion's host is a config knob — point it at the mock (no monkeypatch needed).
     # --token <usr-token> (from /_mock/users) → ACL-filtered to that user; else admin sees all.
-    return NotionResource(NotionConfig(api_key=cli_token(mock.token),
-                                       base_url=notion_base_url(mock.base_url)))
+    return NotionResource(NotionConfig(api_key=token, base_url=notion_base_url(mock.base_url)))
 
 
 async def main(resource) -> None:
@@ -89,10 +87,22 @@ def main_fuse(resource) -> None:
         raise SystemExit(FUSE_HELP.format(err=e))
 
 
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Read Notion through mirage against the mock.")
+    p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+    p.add_argument("--token", help="mock bearer token from GET /_mock/users "
+                                   "(default: the admin token, which sees everything)")
+    p.add_argument("--fuse", action="store_true", help="mount as a real FUSE filesystem (needs macFUSE/fuse3)")
+    return p.parse_args()
+
+
 if __name__ == "__main__":
-    with serve_or_connect(CORPUS) as mock:
-        resource = build(mock)
-        if "--fuse" in sys.argv:
+    args = _parse_args()
+    with serve_or_connect(CORPUS, url=args.url) as mock:
+        if args.token:
+            print("authenticating with --token → responses are ACL-filtered to that user")
+        resource = build(mock, args.token or mock.token)
+        if args.fuse:
             main_fuse(resource)
         else:
             run_mirage(main(resource))

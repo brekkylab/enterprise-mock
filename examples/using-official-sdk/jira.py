@@ -6,9 +6,11 @@
     python examples/using-official-sdk/jira.py --url http://localhost:8000 \
         --username <email> --password <usr-token>   # ACL-filtered to that user
 """
+import argparse
+
 from atlassian import Jira
 
-from _mockserver import cli_basic_auth, serve_or_connect
+from _mockserver import serve_or_connect
 
 CORPUS = [
     {"source_type": "jira", "project": "payments", "title": "SEV2: checkout latency spike",
@@ -18,10 +20,20 @@ CORPUS = [
      "content": "Draft the postmortem and action items.", "status": "To Do"},
 ]
 
-with serve_or_connect(CORPUS) as mock:
-    # --username <email> / --password <usr-token> (from /_mock/users) → ACL-filtered to that
-    # user; either identifies them (mock resolves by token, else by username email). Default: admin.
-    username, password = cli_basic_auth("svc@example.com", mock.token)
+_p = argparse.ArgumentParser(description="Read Jira through atlassian-python-api against the mock.")
+_p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+_p.add_argument("--username", default="svc@example.com",
+                help="Atlassian Basic-auth username (email); the mock resolves the caller by the token/password")
+_p.add_argument("--password", help="api token used as the Basic-auth password "
+                                   "(default: --token, else the admin token)")
+_p.add_argument("--token", help="alias for --password: a mock bearer token from GET /_mock/users")
+args = _p.parse_args()
+
+with serve_or_connect(CORPUS, url=args.url) as mock:
+    username = args.username
+    password = args.password or args.token or mock.token
+    if args.username != "svc@example.com" or args.password or args.token:
+        print(f"authenticating as {username} → responses are ACL-filtered to that user")
     jira = Jira(url=f"{mock.base_url}/atlassian", username=username, password=password)
 
     issues = jira.get("rest/api/3/search/jql", params={"maxResults": 5})["issues"]

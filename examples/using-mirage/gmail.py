@@ -15,9 +15,9 @@ module constants; the mock's ``/oauth2/token`` honors the refresh).
 With ``--fuse`` the mailbox is exposed as an actual filesystem (needs macFUSE/fuse3) and read
 with plain ``os``/shell tools; otherwise it's driven in-process via ``ws.execute``.
 """
+import argparse
 import os
 import subprocess
-import sys
 
 from mirage import MountMode, Workspace
 from mirage.resource.gmail import GmailConfig, GmailResource
@@ -34,9 +34,9 @@ CORPUS = [
 ]
 
 
-def build(mock):
+def build(mock, user):
     point_google_at(mock.base_url)
-    client_id, client_secret, refresh_token, _ = google_oauth_user(mock.base_url)
+    client_id, client_secret, refresh_token, _ = google_oauth_user(mock.base_url, user)
     return GmailResource(GmailConfig(
         client_id=client_id, client_secret=client_secret, refresh_token=refresh_token))
 
@@ -90,10 +90,19 @@ def main_fuse(resource) -> None:
         raise SystemExit(FUSE_HELP.format(err=e))
 
 
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Read Gmail through mirage against the mock.")
+    p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+    p.add_argument("--user", help="which user's OAuth token to use, from GET /_mock/users (default: the first user)")
+    p.add_argument("--fuse", action="store_true", help="mount as a real FUSE filesystem (needs macFUSE/fuse3)")
+    return p.parse_args()
+
+
 if __name__ == "__main__":
-    with serve_or_connect(CORPUS) as mock:
-        resource = build(mock)
-        if "--fuse" in sys.argv:
+    args = _parse_args()
+    with serve_or_connect(CORPUS, url=args.url) as mock:
+        resource = build(mock, args.user)
+        if args.fuse:
             main_fuse(resource)
         else:
             run_mirage(main(resource))

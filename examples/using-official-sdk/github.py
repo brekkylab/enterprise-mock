@@ -5,10 +5,11 @@
     python examples/using-official-sdk/github.py            # or: --url http://localhost:8000
     python examples/using-official-sdk/github.py --url http://localhost:8000 --token <usr-token>
 """
+import argparse
 import sys
 from pathlib import Path
 
-from _mockserver import cli_token, serve_or_connect
+from _mockserver import serve_or_connect
 
 # This file is named github.py, so its own directory would shadow PyGithub's `github`
 # package. Drop that directory now that the local helper is imported.
@@ -24,9 +25,16 @@ CORPUS = [
      "content": "Corrects the refill tick; adds a regression test.", "subtype": "pull_request"},
 ]
 
-with serve_or_connect(CORPUS) as mock:
-    # --token <usr-token> (from /_mock/users) → ACL-filtered to that user; else admin sees all
-    gh = Github(auth=Auth.Token(cli_token(mock.token)), base_url=f"{mock.base_url}/github")
+_p = argparse.ArgumentParser(description="Read GitHub through the official PyGithub against the mock.")
+_p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+_p.add_argument("--token", help="mock bearer token from GET /_mock/users "
+                                "(default: the admin token, which sees everything)")
+args = _p.parse_args()
+
+with serve_or_connect(CORPUS, url=args.url) as mock:
+    if args.token:
+        print("authenticating with --token → responses are ACL-filtered to that user")
+    gh = Github(auth=Auth.Token(args.token or mock.token), base_url=f"{mock.base_url}/github")
 
     # the repo owner is echoed back by the mock (it doesn't own an org concept), so any org works
     repos = list(gh.get_organization("acme").get_repos())

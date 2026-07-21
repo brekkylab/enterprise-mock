@@ -14,26 +14,31 @@ omitted or unreachable, the script falls back to spinning up its own.
 
 ### Testing per-user ACL
 
-To see a **specific user's ACL-filtered view**, pass `--user <email>` (Google) or a token
-(others):
+To see a **specific user's ACL-filtered view**, each example takes the credential its service
+uses — a token, Google `--user`, Atlassian Basic auth, or an S3 keypair:
 
 ```bash
 # Google: gmail.py (authorized_user) & gdrive.py (service account) both take --user <email>
 python examples/using-official-sdk/gmail.py --url http://localhost:8000 --user ava@acme.com
 
-# bearer-token services: slack.py, github.py — grab a token from GET /_mock/users and pass it:
+# bearer-token services: slack.py, github.py, notion.py — grab a token from GET /_mock/users:
 python examples/using-official-sdk/github.py --url http://localhost:8000 --token <usr-token>
 
 # Atlassian Basic auth: jira.py, confluence.py take --username and --password
 python examples/using-official-sdk/jira.py --url http://localhost:8000 \
     --username ava@acme.com --password <usr-token>
+
+# S3: boto3 SigV4 uses an AWS keypair (required with --url; grab a pair from GET /_mock/users)
+python examples/using-official-sdk/s3.py --url http://localhost:8000 \
+    --access-key <AKIA...> --secret-key <secret>
 ```
 
-The response then contains only what that identity is allowed to read. Grab tokens/emails from
-the running server's [`GET /_mock/users`](../../README.md#auth--tokens) directory. For
-Jira/Confluence either `--password <token>` or `--username <email>` alone identifies the user
+The response then contains only what that identity is allowed to read. Grab tokens / emails /
+S3 keypairs from the running server's [`GET /_mock/users`](../../README.md#auth--tokens) directory.
+For Jira/Confluence either `--password <token>` or `--username <email>` alone identifies the user
 (the mock resolves by the api token, falling back to the username email). Pair
-`--user`/`--token`/`--password` with `--url` so the identity exists on the server you're querying.
+`--user`/`--token`/`--password`/`--access-key`+`--secret-key` with `--url` so the identity exists
+on the server you're querying. (Each example declares its own options — see `python <file> --help`.)
 
 ### How Google auth works here
 

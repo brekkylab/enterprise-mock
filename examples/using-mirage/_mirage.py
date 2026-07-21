@@ -38,9 +38,7 @@ if str(_SDK_DIR) not in sys.path:
     sys.path.insert(0, str(_SDK_DIR))
 
 from _mockserver import (  # noqa: E402
-    cli_token,
     google_oauth_user,
-    s3_credentials,
     serve_or_connect,
 )
 
@@ -60,8 +58,7 @@ except Exception:  # noqa: BLE001
     pass
 
 __all__ = ["point_google_at", "slack_base_url", "notion_base_url", "s3_base_url",
-           "serve_or_connect", "google_oauth_user", "s3_credentials", "cli_token", "lines",
-           "run_mirage", "FUSE_HELP"]
+           "serve_or_connect", "google_oauth_user", "lines", "run_mirage", "FUSE_HELP"]
 
 
 def slack_base_url(base_url: str) -> str:

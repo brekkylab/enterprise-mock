@@ -4,29 +4,30 @@
 Mirage mounts an S3 bucket as a filesystem under ``/s3`` — read it with plain ``ls`` / ``cat`` /
 ``grep``. S3's endpoint is a config knob (``S3Config(endpoint_url=..., path_style=True)``), so we
 point it straight at the mock — no monkeypatch (unlike Google). mirage/aioboto3 SigV4-signs every
-request. S3 uses an AWS access-key/secret pair (not a bearer token): pass ``--access-key`` /
-``--secret-key``, or omit them to pull a pair from ``GET /_mock/users`` (``--user <email>``, else
-admin).
+request. S3 uses an AWS access-key/secret pair (not a bearer token): with ``--url`` (a running
+server) ``--access-key``/``--secret-key`` are **required** — pass real AWS keys, or a pair from
+``GET <url>/_mock/users`` (each user, and the admin, has an ``s3_access_key_id`` /
+``s3_secret_access_key`` there). Without ``--url`` the local throwaway mock uses its own admin
+keypair.
 
     pip install -e ".[examples,mirage]"
     python examples/using-mirage/s3.py                              # local throwaway mock
-    python examples/using-mirage/s3.py --url http://localhost:8000
     python examples/using-mirage/s3.py --url http://localhost:8000 --access-key <AKIA...> --secret-key <secret>
-    python examples/using-mirage/s3.py --url http://localhost:8000 --user <email>
-    python examples/using-mirage/s3.py --url http://localhost:8000 --fuse   # real OS mount
+    python examples/using-mirage/s3.py --url http://localhost:8000 --access-key <AKIA...> --secret-key <secret> --fuse   # real OS mount
 
 With ``--fuse`` the tree is exposed as an actual filesystem (needs macFUSE/fuse3) and read with
 plain ``os``/shell tools; otherwise it's driven in-process via ``ws.execute``.
 """
+import argparse
+import json
 import os
 import subprocess
-import sys
+import urllib.request
 
 from mirage import MountMode, Workspace
 from mirage.resource.s3 import S3Config, S3Resource
 
-from _mirage import (FUSE_HELP, lines, run_mirage, s3_base_url,
-                     s3_credentials, serve_or_connect)
+from _mirage import FUSE_HELP, lines, run_mirage, s3_base_url, serve_or_connect
 
 BUCKET = "eng-artifacts"
 CORPUS = [
@@ -37,12 +38,10 @@ CORPUS = [
 ]
 
 
-def build(mock):
-    # AWS keypair from --access-key/--secret-key, else fetched from /_mock/users (--user or admin)
-    ak, sk = s3_credentials(mock.base_url)
+def build(mock, access_key, secret_key):
     return S3Resource(S3Config(bucket=BUCKET, endpoint_url=s3_base_url(mock.base_url),
                                path_style=True, region="us-east-1",
-                               aws_access_key_id=ak, aws_secret_access_key=sk))
+                               aws_access_key_id=access_key, aws_secret_access_key=secret_key))
 
 
 async def main(resource) -> None:
@@ -76,10 +75,32 @@ def main_fuse(resource) -> None:
         raise SystemExit(FUSE_HELP.format(err=e))
 
 
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Read S3 through mirage against the mock's S3.")
+    p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+    p.add_argument("--access-key", help="AWS access key id (S3 uses a keypair, not a token); "
+                                        "required with --url — from GET <url>/_mock/users, or real AWS")
+    p.add_argument("--secret-key", help="AWS secret access key (required with --url)")
+    p.add_argument("--fuse", action="store_true", help="mount as a real FUSE filesystem (needs macFUSE/fuse3)")
+    args = p.parse_args()
+    if args.url and not (args.access_key and args.secret_key):
+        p.error("--access-key and --secret-key are required with --url (grab a pair from GET <url>/_mock/users)")
+    return args
+
+
+def _admin_keys(base_url: str) -> tuple[str, str]:
+    """The local throwaway mock's admin S3 keypair, read from its /_mock/users."""
+    with urllib.request.urlopen(f"{base_url.rstrip('/')}/_mock/users") as r:
+        data = json.load(r)
+    return data["admin_s3_access_key_id"], data["admin_s3_secret_access_key"]
+
+
 if __name__ == "__main__":
-    with serve_or_connect(CORPUS) as mock:
-        resource = build(mock)
-        if "--fuse" in sys.argv:
+    args = _parse_args()
+    with serve_or_connect(CORPUS, url=args.url) as mock:
+        ak, sk = (args.access_key, args.secret_key) if args.url else _admin_keys(mock.base_url)
+        resource = build(mock, ak, sk)
+        if args.fuse:
             main_fuse(resource)
         else:
             run_mirage(main(resource))

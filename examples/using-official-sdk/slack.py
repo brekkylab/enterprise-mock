@@ -5,9 +5,11 @@
     python examples/using-official-sdk/slack.py            # or: --url http://localhost:8000
     python examples/using-official-sdk/slack.py --url http://localhost:8000 --token <usr-token>
 """
+import argparse
+
 from slack_sdk import WebClient
 
-from _mockserver import cli_token, serve_or_connect
+from _mockserver import serve_or_connect
 
 CORPUS = [
     {"source_type": "slack", "channel": "eng", "content": "Deploy freeze starts Friday 5pm."},
@@ -15,9 +17,16 @@ CORPUS = [
      "replies": [{"content": "Looking now."}, {"content": "Rolled back — clearing up."}]},
 ]
 
-with serve_or_connect(CORPUS) as mock:
-    # --token <usr-token> (from /_mock/users) → ACL-filtered to that user; else admin sees all
-    client = WebClient(token=cli_token(mock.token), base_url=f"{mock.base_url}/slack/api/")
+_p = argparse.ArgumentParser(description="Read Slack through the official slack_sdk against the mock.")
+_p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+_p.add_argument("--token", help="mock bearer token from GET /_mock/users "
+                                "(default: the admin token, which sees everything)")
+args = _p.parse_args()
+
+with serve_or_connect(CORPUS, url=args.url) as mock:
+    if args.token:
+        print("authenticating with --token → responses are ACL-filtered to that user")
+    client = WebClient(token=args.token or mock.token, base_url=f"{mock.base_url}/slack/api/")
 
     channels = client.conversations_list()["channels"]
     if not channels:

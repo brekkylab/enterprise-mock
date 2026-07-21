@@ -63,9 +63,9 @@ read correctly.
 **S3** is also plain config, no monkeypatch and no pin bump: `S3Config(endpoint_url=
 s3_base_url(mock.base_url), path_style=True, aws_access_key_id=ak, aws_secret_access_key=sk)`.
 `path_style=True` keeps the bucket in the path (`/s3/<bucket>/...`) rather than the hostname. S3
-uses an AWS keypair (not a bearer token): pass `--access-key`/`--secret-key`, or let
-`s3_credentials(mock.base_url)` fetch a pair from `GET /_mock/users` (`--user <email>`, else
-admin) — the keys the SigV4 verifier accepts.
+uses an AWS keypair (not a bearer token): `--access-key`/`--secret-key` are **required with
+`--url`** (real AWS keys, or a pair from `GET <url>/_mock/users` — the keys the SigV4 verifier
+accepts); without `--url` the local throwaway mock uses its own admin keypair.
 
 **Google** has no such knob — its connectors read the API host from module constants that the
 base helpers return verbatim. So `_mirage.py` exposes `point_google_at(base_url)`, which rewrites
@@ -80,7 +80,7 @@ gmail = GmailResource(GmailConfig(**creds))
 It redirects the OAuth token endpoint, the Drive API, and the Docs/Sheets/Slides APIs (mirage
 reads native Google docs structurally through those, not via Drive export) — each to a distinct
 mock path, so Docs and Slides don't collide. `_mirage.py` also re-exports `serve_or_connect` /
-`google_oauth_user` / `cli_token` from
+`google_oauth_user` from
 [`../using-official-sdk/_mockserver.py`](../using-official-sdk/_mockserver.py), so the `--url` /
 `--user` / `--token` flags behave exactly as in those examples.
 

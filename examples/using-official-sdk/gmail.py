@@ -7,8 +7,10 @@ gdrive.py.)
     pip install -e ".[examples]"
     python examples/using-official-sdk/gmail.py                        # first user (ceo, locally)
     python examples/using-official-sdk/gmail.py --user ceo@acme.com    # a specific user (ACL)
-    python examples/using-official-sdk/gmail.py --url http://localhost:8000 [--user <email>]
+    python examples/using-official-sdk/gmail.py --url http://localhost:8000 --user <email>
 """
+import argparse
+
 from google.api_core.client_options import ClientOptions
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -21,11 +23,16 @@ CORPUS = [
      "author_email": "ceo@acme.com"},
 ]
 
-with serve_or_connect(CORPUS) as mock:
+_p = argparse.ArgumentParser(description="Read Gmail through google-api-python-client against the mock.")
+_p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+_p.add_argument("--user", help="which user's OAuth token to use, from GET /_mock/users (default: the first user)")
+args = _p.parse_args()
+
+with serve_or_connect(CORPUS, url=args.url) as mock:
     # An ordinary Google authorized-user credential — exactly as against real Gmail; only the
     # api_endpoint changes. The mock provides the client_id/secret + refresh token, and the
     # library refreshes against token_uri (the mock's /oauth2/token) to get an access token.
-    client_id, client_secret, refresh_token, token_uri = google_oauth_user(mock.base_url)
+    client_id, client_secret, refresh_token, token_uri = google_oauth_user(mock.base_url, args.user)
     creds = Credentials(None, refresh_token=refresh_token, token_uri=token_uri,
                         client_id=client_id, client_secret=client_secret)
     gmail = build("gmail", "v1", credentials=creds, static_discovery=True,
