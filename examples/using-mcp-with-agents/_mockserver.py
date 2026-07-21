@@ -46,27 +46,6 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def s3_credentials(base_url: str, access_key: str | None = None,
-                   secret_key: str | None = None, user: str | None = None) -> tuple[str, str]:
-    """Resolve the (access_key_id, secret_access_key) an S3 client should use — S3 authenticates
-    with an AWS keypair, not a bearer token.
-
-    An explicit ``access_key`` + ``secret_key`` win. Otherwise a pair is fetched from
-    ``GET {base_url}/_mock/users``: ``user`` (an email) picks that user's keys (responses are
-    ACL-filtered to them), else the admin keypair (sees everything). The keys shown there are what
-    the mock's SigV4 verifier accepts."""
-    if access_key and secret_key:
-        return access_key, secret_key
-    with urllib.request.urlopen(f"{base_url.rstrip('/')}/_mock/users") as r:
-        data = json.load(r)
-    if user:
-        who = next((u for u in data["users"] if u["email"] == user), None)
-        if who is None:
-            raise SystemExit(f"--user {user!r} not found in /_mock/users")
-        return who["s3_access_key_id"], who["s3_secret_access_key"]
-    return data["admin_s3_access_key_id"], data["admin_s3_secret_access_key"]
-
-
 def _healthy(url: str) -> bool:
     # generous timeout: a remote deployment may be a trans-continental HTTPS hop
     try:

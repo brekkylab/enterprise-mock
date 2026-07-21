@@ -21,11 +21,11 @@ helpers:
 | File | What it is |
 |---|---|
 | `_agent.py` | The agent loop for both backends: `--agent anthropic` (default, Anthropic SDK + its beta MCP tool runner) or `--agent openai` (OpenAI Agents SDK) |
-| `_mockserver.py` | Starts the mock (`app.main`) on a small corpus (or connects to a `--url` one), and resolves S3 credentials from `/_mock/users` |
+| `_mockserver.py` | Starts the mock (`app.main`) on a small corpus, or connects to a `--url` one |
 
 Each service file declares its own CLI options with `argparse` — run `python <file> --help` to see
-exactly what that provider takes (e.g. `s3.py` takes `--access-key`/`--secret-key`/`--user`,
-`atlassian.py` takes `--token`/`--username`). All accept `--url` and `--agent {anthropic,openai}`.
+exactly what that provider takes (e.g. `s3.py` takes `--access-key`/`--secret-key`, required with
+`--url`; `atlassian.py` takes `--token`/`--username`). All accept `--url` and `--agent {anthropic,openai}`.
 
 Each example spins up its own small mock by default, or pass `--url` to use an already-running one
 (unreachable → it falls back to spinning up its own).
@@ -56,8 +56,9 @@ ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/s3.py
   `--token` a per-user token from `GET /_mock/users` to scope it (the token, not the username,
   authenticates).
 - **S3** uses an AWS **access-key/secret pair** (not a token): pass `--access-key` / `--secret-key`
-  directly, or omit them to pull a pair from `GET /_mock/users` (`--user <email>` for a specific
-  user, else the admin keypair).
+  — **required with `--url`** (real AWS keys, or a pair from `GET <url>/_mock/users`, where each
+  user and the admin has an `s3_access_key_id` / `s3_secret_access_key`). Without `--url` the local
+  throwaway mock uses its own admin keypair.
 
 - **Local** — `--url http://localhost:PORT`.
 - **Remote** — `--url https://host` plus the service's credentials. Grab them from
@@ -98,9 +99,9 @@ endpoint override, so the example just sets:
 
 - `AWS_ENDPOINT_URL=<mock>/s3` — every AWS CLI call the server runs is routed at the mock instead
   of real AWS.
-- `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` — the access-key/secret pair from `--access-key` /
-  `--secret-key`, or fetched from `GET /_mock/users` (the keys the mock's SigV4 verifier accepts),
-  so botocore's signature resolves back to that identity and the mock enforces its ACL.
+- `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` — the required `--access-key` / `--secret-key` (the
+  keys the mock's SigV4 verifier accepts; grab a pair from `GET /_mock/users`), so botocore's
+  signature resolves back to that identity and the mock enforces its ACL.
 - `AWS_REGION=us-east-1` — any region works (the mock's verifier reads the region back out of the
   client's own credential scope); this just has to be *some* valid region.
 - `READ_OPERATIONS_ONLY=true` — the server refuses to run mutating AWS CLI commands.
