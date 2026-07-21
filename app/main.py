@@ -15,11 +15,11 @@ from app import store, synth
 from app.acl import Acl
 from app.config import get_settings
 from app.oauth import Oauth
-from app.routers import atlassian, github, google, notion, oauth, slack
+from app.routers import atlassian, github, google, notion, oauth, s3, slack
 
 
 def _build_index(conn) -> dict:
-    idx = {"github": {}, "jira": {}, "confluence": {}, "notion": {}}
+    idx = {"github": {}, "jira": {}, "confluence": {}, "notion": {}, "s3": {}}
     for r in conn.execute(f"SELECT doc_id, {store.grouping_col('github')} AS container FROM {store.table('github')}"):
         idx["github"][(r["container"], synth.github_number(r["doc_id"]))] = r["doc_id"]
     for r in conn.execute(f"SELECT doc_id, {store.grouping_col('jira')} AS container FROM {store.table('jira')}"):
@@ -30,6 +30,8 @@ def _build_index(conn) -> dict:
     # dashed or dashless (both valid to real Notion) resolves — see routers.notion._norm.
     for r in conn.execute(f"SELECT doc_id FROM {store.table('notion')}"):
         idx["notion"][synth.notion_id(r["doc_id"]).replace("-", "")] = r["doc_id"]
+    for r in conn.execute(f"SELECT doc_id, bucket, key FROM {store.table('s3')}"):
+        idx["s3"][f"{r['bucket']}/{r['key']}"] = r["doc_id"]
     return idx
 
 
@@ -176,3 +178,4 @@ app.include_router(google.router)
 app.include_router(github.router)
 app.include_router(atlassian.router)
 app.include_router(notion.router)
+app.include_router(s3.router)

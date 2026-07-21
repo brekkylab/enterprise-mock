@@ -250,3 +250,58 @@ def test_sdk_read_coverage(live_server):
             _results.append((fn.__name__.title(), "setup", False, f"{type(e).__name__}: {e}"[:44]))
     failures = [f"{svc}.{name}: {note}" for svc, name, ok, note in _results if not ok]
     assert not failures, f"{len(failures)} SDK check(s) failed:\n" + "\n".join(failures)
+
+
+# ------------------------------------------------------------------ S3
+
+def _s3_client(base_url, token):
+    boto3 = pytest.importorskip("boto3")
+    from botocore.config import Config
+    from app import synth
+    return boto3.client(
+        "s3", endpoint_url=f"{base_url}/s3",
+        aws_access_key_id=synth.s3_access_key_id(token),
+        aws_secret_access_key=synth.s3_secret_access_key(token),
+        region_name="us-east-1", config=Config(s3={"addressing_style": "path"}))
+
+
+def test_s3_sdk_read_matrix(live_server):
+    base_url, settings = live_server
+    s3 = _s3_client(base_url, settings.admin_token)
+
+    names = {b["Name"] for b in s3.list_buckets()["Buckets"]}
+    assert {"eng-artifacts", "people-vault"} <= names
+
+    # us-east-1 is represented by an empty LocationConstraint on real S3; boto3 surfaces that
+    # as a falsy value (None), not the literal string "us-east-1".
+    assert not s3.get_bucket_location(Bucket="eng-artifacts").get("LocationConstraint")
+
+    listed = s3.list_objects_v2(Bucket="eng-artifacts")
+    keys = {o["Key"] for o in listed["Contents"]}
+    assert {"runbooks/oncall.md", "design/architecture.md"} <= keys
+
+    pref = s3.list_objects_v2(Bucket="eng-artifacts", Prefix="runbooks/")
+    assert {o["Key"] for o in pref["Contents"]} == {"runbooks/oncall.md"}
+
+    obj = s3.get_object(Bucket="eng-artifacts", Key="runbooks/oncall.md")
+    body = obj["Body"].read().decode()
+    assert body == "Check dashboards, roll back, page on-call."
+    assert obj["ContentType"] == "text/markdown"
+
+    head = s3.head_object(Bucket="eng-artifacts", Key="runbooks/oncall.md")
+    assert head["ContentLength"] == len(body)
+
+    part = s3.get_object(Bucket="eng-artifacts", Key="runbooks/oncall.md", Range="bytes=0-4")
+    assert part["Body"].read().decode() == body[:5]        # inclusive range
+    assert part["ContentRange"].endswith(f"/{len(body)}")
+
+
+def test_s3_sdk_acl_scopes_to_user(live_server, tokens):
+    base_url, settings = live_server
+    s3 = _s3_client(base_url, tokens["ava@acme.com"])       # engineering, not people
+    names = {b["Name"] for b in s3.list_buckets()["Buckets"]}
+    assert "eng-artifacts" in names and "people-vault" not in names
+    from botocore.exceptions import ClientError
+    with pytest.raises(ClientError) as e:
+        s3.get_object(Bucket="people-vault", Key="comp/bands.csv")
+    assert e.value.response["Error"]["Code"] in ("NoSuchKey", "NoSuchBucket", "AccessDenied")

@@ -525,3 +525,70 @@ def test_notion_data_source_retrieve(client, admin_h):
     dsid = synth.notion_data_source_id("nt-tasks-db")
     ds = client.get(f"/notion/v1/data_sources/{dsid}", headers=admin_h).json()
     assert ds["object"] == "data_source" and "Status" in ds["properties"]
+
+
+# ------------------------------------------------------------------------ S3 (SigV4/404/416 edges)
+
+def _sign_get(base_url, path, token, *, tamper=False, extra_headers=None):
+    """Return (url, headers) for a SigV4-signed GET, using botocore (the real signer)."""
+    pytest.importorskip("botocore")
+    from botocore.auth import S3SigV4Auth
+    from botocore.awsrequest import AWSRequest
+    from botocore.credentials import Credentials
+    from app import synth
+    ak = synth.s3_access_key_id(token)
+    sk = synth.s3_secret_access_key(token)
+    url = f"{base_url}{path}"
+    req = AWSRequest(method="GET", url=url, headers=dict(extra_headers or {}))
+    req.headers["x-amz-content-sha256"] = "UNSIGNED-PAYLOAD"
+    S3SigV4Auth(Credentials(ak, sk), "s3", "us-east-1").add_auth(req)
+    headers = dict(req.headers)
+    if tamper:
+        headers["Authorization"] = headers["Authorization"][:-4] + "dead"
+    return url, headers
+
+
+def test_s3_unknown_access_key_rejected(live_server):
+    import urllib.request
+    base_url, settings = live_server
+    url = f"{base_url}/s3/eng-artifacts?list-type=2"
+    req = urllib.request.Request(url, headers={
+        "Authorization": ("AWS4-HMAC-SHA256 Credential=AKIABOGUS0000000BOGUS/"
+                          "20260720/us-east-1/s3/aws4_request, "
+                          "SignedHeaders=host, Signature=00"),
+        "x-amz-date": "20260720T000000Z"})
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(req)
+    assert e.value.code == 403 and b"InvalidAccessKeyId" in e.value.read()
+
+
+def test_s3_tampered_signature_rejected(live_server):
+    import urllib.request
+    base_url, settings = live_server
+    url, headers = _sign_get(base_url, "/s3/eng-artifacts?list-type=2",
+                             settings.admin_token, tamper=True)
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(urllib.request.Request(url, headers=headers))
+    assert e.value.code == 403 and b"SignatureDoesNotMatch" in e.value.read()
+
+
+def test_s3_missing_key_is_nosuchkey(live_server):
+    import urllib.request
+    base_url, settings = live_server
+    url, headers = _sign_get(base_url, "/s3/eng-artifacts/does/not/exist.md", settings.admin_token)
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(urllib.request.Request(url, headers=headers))
+    assert e.value.code == 404 and b"NoSuchKey" in e.value.read()
+
+
+def test_s3_unsatisfiable_range_is_416(live_server):
+    import urllib.request
+    base_url, settings = live_server
+    url, headers = _sign_get(base_url, "/s3/eng-artifacts/runbooks/oncall.md",
+                             settings.admin_token, extra_headers={"Range": "bytes=99999-100000"})
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(urllib.request.Request(url, headers=headers))
+    assert e.value.code == 416 and b"InvalidRange" in e.value.read()
+    total = len("Check dashboards, roll back, page on-call.")
+    assert e.value.headers.get("Content-Range") == f"bytes */{total}"
+    assert e.value.headers.get("Content-Type") == "application/xml"
