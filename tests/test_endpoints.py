@@ -666,3 +666,18 @@ def test_github_responses_unchanged_by_enrichment(client, admin_h):
                 "assignees", "milestone", "comments", "reactions", "author_association",
                 "created_at", "updated_at", "html_url", "url", "repository_url"):
         assert key in item, f"missing {key} (fidelity regression)"
+
+
+def test_github_issue_search_has_typed_response_schema(client):
+    op = client.get("/openapi.json").json()["paths"]["/github/search/issues"]["get"]
+    schema = op["responses"]["200"]["content"]["application/json"]["schema"]
+    assert schema != {}
+    assert "$ref" in schema or schema.get("type") in ("object", "array")
+
+
+def test_github_operation_ids_unique(client):
+    spec = client.get("/openapi.json").json()
+    ids = [op["operationId"]
+           for p, item in spec["paths"].items() if p.startswith("/github")
+           for m, op in item.items() if isinstance(op, dict) and "operationId" in op]
+    assert len(ids) == len(set(ids))

@@ -12,6 +12,7 @@ import re
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict
 
 from app import auth, store, synth
 from app.acl import Caller
@@ -19,6 +20,29 @@ from app.config import get_settings
 from app.pagination import clamp_page, github_link_header
 
 router = APIRouter(prefix="/github", tags=["github"])
+
+
+class _Loose(BaseModel):
+    """Documents the fields the bridge/agent rely on while ``extra='allow'`` lets the
+    builders' full (real-API-shaped) field set pass through unfiltered — the OpenAPI schema
+    gains structure with zero fidelity loss."""
+    model_config = ConfigDict(extra="allow")
+
+
+class GitHubIssue(_Loose):
+    id: int
+    number: int
+    title: str | None = None
+    body: str | None = None
+    state: str
+    html_url: str
+    url: str
+
+
+class GitHubIssueSearch(_Loose):
+    total_count: int
+    incomplete_results: bool
+    items: list[GitHubIssue]
 
 
 def _require(request: Request) -> Caller:
@@ -91,7 +115,7 @@ def _issue_qual_match(row, quals: dict) -> bool:
     return True
 
 
-@router.get("/search/issues")
+@router.get("/search/issues", response_model=GitHubIssueSearch)
 async def search_issues(request: Request,
                         q: str = Query("", description="Issues/PRs search query"),
                         page: int | None = Query(None, ge=1),
@@ -156,7 +180,7 @@ async def get_repo(owner: str, repo: str, request: Request):
     return _repo_obj(conn, owner, repo, _api_base(request))
 
 
-@router.get("/repos/{owner}/{repo}/issues")
+@router.get("/repos/{owner}/{repo}/issues", response_model=list[GitHubIssue])
 async def list_issues(owner: str, repo: str, request: Request,
                       state: str = Query("open"),
                       page: int | None = Query(None, ge=1),
@@ -176,7 +200,7 @@ async def list_issues(owner: str, repo: str, request: Request,
     return _paged(request, total, {"state": state}, body, page, per_page)
 
 
-@router.get("/repos/{owner}/{repo}/issues/{number}")
+@router.get("/repos/{owner}/{repo}/issues/{number}", response_model=GitHubIssue)
 async def get_issue(owner: str, repo: str, number: int, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
