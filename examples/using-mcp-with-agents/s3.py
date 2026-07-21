@@ -44,20 +44,27 @@ CORPUS = [
      "content": "When a deploy or migration spikes checkout latency: check the payments "
                 "dashboards, roll back the last change, and page the on-call engineer."},
 ]
-QUESTION = ("The company's knowledge base is stored as objects in S3 buckets — search it with the "
-            "S3 API only (list the buckets, list a bucket's objects, then get the relevant "
-            "object); do not use other AWS services. Find the incident about checkout latency and "
-            "summarize it, then find the on-call runbook. Cite the object keys.")
+QUESTION = ("The company's knowledge base is stored as objects in S3 buckets — use the S3 API only "
+            "(no other AWS services). List the buckets, list a bucket's objects, and read an "
+            "object's contents with `aws s3 cp s3://<bucket>/<key> -` (the trailing dash streams "
+            "the body to stdout; `s3api get-object` only writes to a file and won't return the "
+            "body). Find the incident about checkout latency and summarize it, then find the "
+            "on-call runbook. Cite the object keys.")
 
 
 def build_params(base_url: str, access_key: str, secret_key: str) -> StdioServerParameters:
     """`uvx` args pointing the awslabs aws-api MCP server at the mock via AWS_ENDPOINT_URL.
-    READ_OPERATIONS_ONLY keeps it read-only."""
+
+    We deliberately do NOT set READ_OPERATIONS_ONLY: it blocks `aws s3 cp s3://… -`, which is the
+    only way this server streams an object's *body* back to the model (a read-only `s3api
+    get-object` just writes the bytes to a sandboxed file and returns metadata, so the agent can
+    list objects but never read them). The mock has no write endpoints, so dropping the read-only
+    guard is safe here; against real AWS you'd weigh read-only vs. being able to read object bodies."""
     return StdioServerParameters(
         command="uvx", args=["awslabs.aws-api-mcp-server@latest"],
         env={"AWS_ENDPOINT_URL": f"{base_url.rstrip('/')}/s3",
              "AWS_ACCESS_KEY_ID": access_key, "AWS_SECRET_ACCESS_KEY": secret_key,
-             "AWS_REGION": "us-east-1", "READ_OPERATIONS_ONLY": "true"})
+             "AWS_REGION": "us-east-1"})
 
 
 def _parse_args() -> argparse.Namespace:
