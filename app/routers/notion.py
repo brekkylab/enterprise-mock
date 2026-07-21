@@ -27,6 +27,7 @@ import json
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict
 
 from app import auth, store, synth
 
@@ -35,6 +36,45 @@ router = APIRouter(prefix="/notion/v1", tags=["notion"])
 _PAGE_MAX = 100  # Notion caps page_size at 100
 DEFAULT_VERSION = "2025-09-03"
 LEGACY_VERSION = "2022-06-28"
+
+
+# --- OpenAPI enrichment (issue #4 bridge) --------------------------------------------------
+# GET query params are documented with openapi_extra (merges with path params, no signature
+# change); POST bodies (search/query) are read via _json_body, so their shape is documented as a
+# requestBody the same way. Response models use extra="allow" to preserve the full field set.
+# Error paths return JSONResponse (_error), which FastAPI passes through unfiltered.
+
+class _NLoose(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class NotionObject(_NLoose):
+    object: str
+    id: str
+
+
+class NotionList(_NLoose):
+    object: str
+    results: list[dict] = []
+    has_more: bool = False
+
+
+def _nqp(name: str, typ: str = "string") -> dict:
+    return {"name": name, "in": "query", "schema": {"type": typ}}
+
+
+_P_PAGINATE = [_nqp("start_cursor"), _nqp("page_size", "integer")]
+_P_COMMENTS = [_nqp("block_id"), *_P_PAGINATE]
+
+
+def _body(props: dict) -> dict:
+    return {"requestBody": {"content": {"application/json": {
+        "schema": {"type": "object", "properties": props}}}}}
+
+
+_B_SEARCH = _body({"query": {"type": "string"}, "filter": {"type": "object"},
+                   "start_cursor": {"type": "string"}, "page_size": {"type": "integer"}})
+_B_QUERY = _body({"start_cursor": {"type": "string"}, "page_size": {"type": "integer"}})
 
 
 # --------------------------------------------------------------------------- helpers
@@ -199,7 +239,7 @@ def _data_source_obj(conn, row) -> dict:
 
 # --------------------------------------------------------------------------- pages / blocks
 
-@router.get("/pages/{page_id}")
+@router.get("/pages/{page_id}", response_model=NotionObject)
 async def get_page(page_id: str, request: Request):
     caller = _caller(request)
     if caller is None:
@@ -213,7 +253,7 @@ async def get_page(page_id: str, request: Request):
     return _page_obj(conn, row)
 
 
-@router.get("/blocks/{block_id}")
+@router.get("/blocks/{block_id}", response_model=NotionObject)
 async def get_block(block_id: str, request: Request):
     caller = _caller(request)
     if caller is None:
@@ -232,7 +272,8 @@ async def get_block(block_id: str, request: Request):
             "parent": _parent_field(row), kind: {"title": row["title"]}}
 
 
-@router.get("/blocks/{block_id}/children")
+@router.get("/blocks/{block_id}/children", response_model=NotionList,
+            openapi_extra={"parameters": _P_PAGINATE})
 async def get_block_children(block_id: str, request: Request):
     caller = _caller(request)
     if caller is None:
@@ -251,7 +292,7 @@ async def get_block_children(block_id: str, request: Request):
 
 # --------------------------------------------------------------------------- databases / data sources
 
-@router.get("/databases/{database_id}")
+@router.get("/databases/{database_id}", response_model=NotionObject)
 async def get_database(database_id: str, request: Request):
     caller = _caller(request)
     if caller is None:
@@ -265,7 +306,7 @@ async def get_database(database_id: str, request: Request):
     return _database_obj(conn, row, _version(request))
 
 
-@router.get("/data_sources/{data_source_id}")
+@router.get("/data_sources/{data_source_id}", response_model=NotionObject)
 async def get_data_source(data_source_id: str, request: Request):
     caller = _caller(request)
     if caller is None:
@@ -298,19 +339,21 @@ async def _query_rows(request: Request, db_doc_id: str | None):
     return _list_obj(results, offset, len(page), total, "page_or_database")
 
 
-@router.post("/data_sources/{data_source_id}/query")
+@router.post("/data_sources/{data_source_id}/query", response_model=NotionList,
+             openapi_extra=_B_QUERY)
 async def query_data_source(data_source_id: str, request: Request):
     return await _query_rows(request, _db_doc_for_data_source(request, data_source_id))
 
 
-@router.post("/databases/{database_id}/query")
+@router.post("/databases/{database_id}/query", response_model=NotionList,
+             openapi_extra=_B_QUERY)
 async def query_database(database_id: str, request: Request):
     return await _query_rows(request, _doc_id_for(request, database_id))
 
 
 # --------------------------------------------------------------------------- search
 
-@router.post("/search")
+@router.post("/search", response_model=NotionList, openapi_extra=_B_SEARCH)
 async def search(request: Request):
     caller = _caller(request)
     if caller is None:
@@ -345,7 +388,8 @@ async def search(request: Request):
 
 # --------------------------------------------------------------------------- users
 
-@router.get("/users")
+@router.get("/users", response_model=NotionList,
+            openapi_extra={"parameters": _P_PAGINATE})
 async def list_users(request: Request):
     caller = _caller(request)
     if caller is None:
@@ -359,7 +403,7 @@ async def list_users(request: Request):
     return _list_obj(results, offset, len(page), len(users), "user")
 
 
-@router.get("/users/me")
+@router.get("/users/me", response_model=NotionObject)
 async def get_me(request: Request):
     caller = _caller(request)
     if caller is None:
@@ -374,7 +418,7 @@ async def get_me(request: Request):
                     "workspace_name": auth.acl(request).org_name}}
 
 
-@router.get("/users/{user_id}")
+@router.get("/users/{user_id}", response_model=NotionObject)
 async def get_user(user_id: str, request: Request):
     caller = _caller(request)
     if caller is None:
@@ -389,7 +433,8 @@ async def get_user(user_id: str, request: Request):
 
 # --------------------------------------------------------------------------- comments
 
-@router.get("/comments")
+@router.get("/comments", response_model=NotionList,
+            openapi_extra={"parameters": _P_COMMENTS})
 async def list_comments(request: Request):
     caller = _caller(request)
     if caller is None:

@@ -65,6 +65,7 @@ mcp = [
     "openai>=1.40",
     "openai-agents>=0.1",
     "pyyaml>=6.0",
+    "fastmcp>=2.0",
 ]
 
 [project.urls]
@@ -75,6 +76,13 @@ Issues = "https://github.com/brekkylab/enterprise-mock/issues"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# The app silences this at import (app/openapi.py), but pytest resets warning filters per test,
+# so suppress it the pytest-native way too. The mock serves several routes on multiple methods
+# for vendor fidelity (Slack GET+POST, Jira v2/v3, S3 GET+HEAD); FastAPI warns about the resulting
+# duplicate operationIds when building /openapi.json — expected, and collapsed by app.openapi.
+filterwarnings = [
+    "ignore:Duplicate Operation ID:UserWarning",
+]
 
 [tool.setuptools.packages.find]
 include = ["app*"]

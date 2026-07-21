@@ -56,6 +56,9 @@ SAMPLE = [
      "reactions": [{"name": "eyes", "count": 2, "users": ["U01", "U02"]}],
      "replies": [{"content": "Yeah, looking now.", "author_email": "ava@acme.com"},
                  {"content": "Rolled back; 502s clearing.", "author_email": "bob@acme.com"}]},
+    {"source_type": "slack", "channel": "people-confidential", "group": "people",
+     "content": "Confidential people-ops note: Q3 reorg headcount plan.",
+     "author_email": "hana@acme.com", "author_groups": ["people"], "visibility": "group"},
 
     {"source_type": "github", "doc_id": "gh-issue-1", "repo": "gateway", "group": "engineering",
      "title": "Rate limiter drops bursts under 50ms", "content": "Token-bucket refill is off by one tick.",
@@ -70,6 +73,10 @@ SAMPLE = [
               "labels": ["bug"],
               "reviews": [{"author_email": "ava@acme.com", "state": "APPROVED", "body": "LGTM."}]},
      "comments": [{"content": "Add a metric for dropped bursts?", "author_email": "ava@acme.com"}]},
+    {"source_type": "github", "doc_id": "gh-sec-1", "repo": "vault", "group": "people",
+     "title": "Rotate quarterly signing keys", "content": "Track key rotation for the people-ops vault.",
+     "author_email": "hana@acme.com", "author_groups": ["people"], "visibility": "group",
+     "meta": {"state": "open", "labels": ["security"]}},
 
     {"source_type": "jira", "doc_id": "jira-sev2", "project": "payments", "group": "payments",
      "title": "SEV2: checkout latency spike", "content": "p95 checkout latency jumped to 2.1s.",
@@ -96,6 +103,9 @@ SAMPLE = [
      "readers": ["ceo@acme.com", "ava@acme.com"], "cc": "cfo@acme.com",
      "attachments": [{"filename": "Q1-deck.pdf", "mime": "application/pdf", "size": 2048,
                       "content": "PDF bytes placeholder"}]},
+    {"source_type": "gmail", "mailbox": "cfo", "title": "Confidential comp review",
+     "content": "Q3 compensation adjustments — do not forward.", "author_email": "cfo@acme.com",
+     "readers": ["cfo@acme.com"]},
 
     {"source_type": "google_drive", "folder": "marketing", "group": "marketing",
      "title": "Brand guidelines v3", "content": "Logo usage, palette, typography.",

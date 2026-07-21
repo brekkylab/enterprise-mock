@@ -10,6 +10,7 @@ import re
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict
 
 from app import auth, store, synth
 from app.acl import Caller
@@ -17,6 +18,60 @@ from app.config import get_settings
 from app.pagination import decode_cursor, next_cursor
 
 router = APIRouter(prefix="/slack/api", tags=["slack"])
+
+
+# --- OpenAPI enrichment (issue #4 bridge) --------------------------------------------------
+# Params are read query-or-form via _param/_int, so we document them with openapi_extra instead
+# of changing the handler signatures (which would break the form-body read path). Response models
+# use extra="allow" so the builders' full field set passes through unfiltered.
+
+class _SlackOk(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    ok: bool
+
+
+class SlackConversationsList(_SlackOk):
+    channels: list[dict] = []
+
+
+class SlackConversationInfo(_SlackOk):
+    channel: dict = {}
+
+
+class SlackHistory(_SlackOk):
+    messages: list[dict] = []
+    has_more: bool = False
+
+
+class SlackMembers(_SlackOk):
+    members: list[str] = []
+
+
+class SlackUsersList(_SlackOk):
+    members: list[dict] = []
+
+
+class SlackUserInfo(_SlackOk):
+    user: dict = {}
+
+
+class SlackSearch(_SlackOk):
+    messages: dict = {}
+
+
+def _qp(name: str, typ: str = "string", required: bool = False) -> dict:
+    return {"name": name, "in": "query", "required": required, "schema": {"type": typ}}
+
+
+_P_LIST = [_qp("limit", "integer"), _qp("cursor")]
+_P_CHANNEL = [_qp("channel", required=True)]
+_P_HISTORY = [_qp("channel", required=True), _qp("limit", "integer"), _qp("cursor"),
+              _qp("oldest"), _qp("latest"), _qp("inclusive", "boolean")]
+_P_REPLIES = [_qp("channel", required=True), _qp("ts", required=True)]
+_P_USER = [_qp("user", required=True)]
+_P_SEARCH = [_qp("query", required=True), _qp("count", "integer"), _qp("page", "integer"),
+             _qp("sort"), _qp("sort_dir")]
+_P_SEARCH_FILES = [_qp("query", required=True), _qp("count", "integer")]
 
 # conversations.history page cap (thread roots). Slack recommends limit<=200; capping here bounds
 # how many authors a client resolves per call so history stays fast even with a small users.list.
@@ -94,7 +149,8 @@ async def auth_test(request: Request):
             "team_id": "T0000MOCK"}
 
 
-@router.api_route("/conversations.list", methods=["GET", "POST"])
+@router.api_route("/conversations.list", methods=["GET", "POST"],
+                  response_model=SlackConversationsList, openapi_extra={"parameters": _P_LIST})
 async def conversations_list(request: Request):
     conn = auth.conn(request)
     caller = _caller(request)
@@ -121,7 +177,8 @@ async def conversations_list(request: Request):
     return {"ok": True, "channels": page, "response_metadata": {"next_cursor": cursor}}
 
 
-@router.api_route("/conversations.info", methods=["GET", "POST"])
+@router.api_route("/conversations.info", methods=["GET", "POST"],
+                  response_model=SlackConversationInfo, openapi_extra={"parameters": _P_CHANNEL})
 async def conversations_info(request: Request):
     conn = auth.conn(request)
     caller = _caller(request)
@@ -133,7 +190,8 @@ async def conversations_info(request: Request):
     return {"ok": True, "channel": _full_channel(request, conn, name)}
 
 
-@router.api_route("/conversations.history", methods=["GET", "POST"])
+@router.api_route("/conversations.history", methods=["GET", "POST"],
+                  response_model=SlackHistory, openapi_extra={"parameters": _P_HISTORY})
 async def conversations_history(request: Request):
     conn = auth.conn(request)
     caller = _caller(request)
@@ -195,7 +253,8 @@ async def conversations_history(request: Request):
             "pin_count": 0, "response_metadata": {"next_cursor": cursor}}
 
 
-@router.api_route("/conversations.replies", methods=["GET", "POST"])
+@router.api_route("/conversations.replies", methods=["GET", "POST"],
+                  response_model=SlackHistory, openapi_extra={"parameters": _P_REPLIES})
 async def conversations_replies(request: Request):
     conn = auth.conn(request)
     caller = _caller(request)
@@ -251,7 +310,8 @@ async def conversations_replies(request: Request):
     return {"ok": True, "messages": messages, "has_more": False}
 
 
-@router.api_route("/conversations.members", methods=["GET", "POST"])
+@router.api_route("/conversations.members", methods=["GET", "POST"],
+                  response_model=SlackMembers, openapi_extra={"parameters": _P_CHANNEL})
 async def conversations_members(request: Request):
     conn = auth.conn(request)
     caller = _caller(request)
@@ -268,7 +328,8 @@ async def conversations_members(request: Request):
     return {"ok": True, "members": members, "response_metadata": {"next_cursor": ""}}
 
 
-@router.api_route("/users.list", methods=["GET", "POST"])
+@router.api_route("/users.list", methods=["GET", "POST"],
+                  response_model=SlackUsersList, openapi_extra={"parameters": _P_LIST})
 async def users_list(request: Request):
     conn = auth.conn(request)
     caller = _caller(request)
@@ -286,7 +347,8 @@ async def users_list(request: Request):
     return {"ok": True, "members": members, "response_metadata": {"next_cursor": cursor}}
 
 
-@router.api_route("/users.info", methods=["GET", "POST"])
+@router.api_route("/users.info", methods=["GET", "POST"],
+                  response_model=SlackUserInfo, openapi_extra={"parameters": _P_USER})
 async def users_info(request: Request):
     conn = auth.conn(request)
     caller = _caller(request)
@@ -382,7 +444,8 @@ def _messages_block(request: Request):
     return query, block
 
 
-@router.api_route("/search.messages", methods=["GET", "POST"])
+@router.api_route("/search.messages", methods=["GET", "POST"],
+                  response_model=SlackSearch, openapi_extra={"parameters": _P_SEARCH})
 async def search_messages(request: Request):
     query, block = _messages_block(request)
     if block is None:
@@ -390,7 +453,8 @@ async def search_messages(request: Request):
     return {"ok": True, "query": query, "messages": block}
 
 
-@router.api_route("/search.files", methods=["GET", "POST"])
+@router.api_route("/search.files", methods=["GET", "POST"],
+                  response_model=SlackSearch, openapi_extra={"parameters": _P_SEARCH_FILES})
 async def search_files(request: Request):
     """Slack file search. The mock has no uploaded-file corpus (files exist only as message
     attachments), so matches are always empty — but the endpoint must exist and return ok=True:
@@ -410,7 +474,8 @@ async def search_files(request: Request):
     return {"ok": True, "query": query, "files": empty}
 
 
-@router.api_route("/search.all", methods=["GET", "POST"])
+@router.api_route("/search.all", methods=["GET", "POST"],
+                  response_model=SlackSearch, openapi_extra={"parameters": _P_SEARCH})
 async def search_all(request: Request):
     """Slack's combined search (the slack-go SDK's Search()/SearchContext() hits this). The mock
     has no file corpus, so ``files`` is always empty; ``messages`` matches search.messages."""

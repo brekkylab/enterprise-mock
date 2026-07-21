@@ -17,6 +17,7 @@ from http import HTTPStatus
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import PlainTextResponse, Response
+from pydantic import BaseModel, ConfigDict
 
 from app import auth, store, synth
 from app.acl import Caller
@@ -24,6 +25,65 @@ from app.config import get_settings
 from app.pagination import decode_cursor, next_page_token
 
 router = APIRouter(tags=["google"])
+
+
+# --- OpenAPI enrichment (issue #4 bridge) --------------------------------------------------
+# Query params are read query-only (via _int/request.query_params); documenting them with
+# openapi_extra keeps the handler bodies untouched and merges cleanly with the auto-generated
+# path params. Response models use extra="allow" so builders' full field set passes through.
+
+class _GLoose(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class GmailMessageList(_GLoose):
+    messages: list[dict] = []
+    resultSizeEstimate: int = 0
+
+
+class GmailThreadList(_GLoose):
+    threads: list[dict] = []
+    resultSizeEstimate: int = 0
+
+
+class GmailMessage(_GLoose):
+    id: str
+
+
+class GmailThread(_GLoose):
+    id: str
+    messages: list[dict] = []
+
+
+class GmailAttachment(_GLoose):
+    attachmentId: str
+    size: int
+    data: str
+
+
+def _gqp(name: str, typ: str = "string", required: bool = False) -> dict:
+    return {"name": name, "in": "query", "required": required, "schema": {"type": typ}}
+
+
+_P_GMAIL_LIST = [_gqp("maxResults", "integer"), _gqp("pageToken"), _gqp("q")]
+_P_GMAIL_FORMAT = [_gqp("format")]
+
+
+class DriveFileList(_GLoose):
+    kind: str = "drive#fileList"
+    files: list[dict] = []
+
+
+class DrivePermissionList(_GLoose):
+    kind: str = "drive#permissionList"
+    permissions: list[dict] = []
+
+
+# drive_files_get / .export return raw Response/PlainTextResponse on some branches — they get
+# openapi_extra params only (no JSON response_model, which would mis-serialize the raw body).
+_P_DRIVE_LIST = [_gqp("pageSize", "integer"), _gqp("pageToken"), _gqp("q"), _gqp("fields")]
+_P_DRIVE_ALT = [_gqp("alt")]
+_P_DRIVE_EXPORT = [_gqp("mimeType", required=True)]
 
 DRIVE_DOC_MIME = "application/vnd.google-apps.document"
 
@@ -290,7 +350,8 @@ def _gmail_query(conn, mailbox, ids, q: str) -> list:
     return [r for r in cand if _gmail_op_match(r, ops)]
 
 
-@router.get("/gmail/v1/users/{user_id}/messages")
+@router.get("/gmail/v1/users/{user_id}/messages", response_model=GmailMessageList,
+            openapi_extra={"parameters": _P_GMAIL_LIST})
 async def gmail_messages_list(user_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
@@ -316,7 +377,8 @@ async def gmail_messages_list(user_id: str, request: Request):
     return body
 
 
-@router.get("/gmail/v1/users/{user_id}/messages/{msg_id}")
+@router.get("/gmail/v1/users/{user_id}/messages/{msg_id}", response_model=GmailMessage,
+            openapi_extra={"parameters": _P_GMAIL_FORMAT})
 async def gmail_messages_get(user_id: str, msg_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
@@ -327,7 +389,8 @@ async def gmail_messages_get(user_id: str, msg_id: str, request: Request):
     return _gmail_message(row, request.query_params.get("format", "full"))
 
 
-@router.get("/gmail/v1/users/{user_id}/messages/{msg_id}/attachments/{att_id}")
+@router.get("/gmail/v1/users/{user_id}/messages/{msg_id}/attachments/{att_id}",
+            response_model=GmailAttachment)
 async def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
@@ -342,7 +405,8 @@ async def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Requ
     return {"attachmentId": att_id, "size": len(body), "data": data}
 
 
-@router.get("/gmail/v1/users/{user_id}/threads")
+@router.get("/gmail/v1/users/{user_id}/threads", response_model=GmailThreadList,
+            openapi_extra={"parameters": _P_GMAIL_LIST})
 async def gmail_threads_list(user_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
@@ -369,7 +433,8 @@ async def gmail_threads_list(user_id: str, request: Request):
     return body
 
 
-@router.get("/gmail/v1/users/{user_id}/threads/{thread_id}")
+@router.get("/gmail/v1/users/{user_id}/threads/{thread_id}", response_model=GmailThread,
+            openapi_extra={"parameters": _P_GMAIL_FORMAT})
 async def gmail_thread_get(user_id: str, thread_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
@@ -596,7 +661,8 @@ async def drive_shared_drives(request: Request):
     return {"kind": "drive#driveList", "drives": []}
 
 
-@router.get("/drive/v3/files")
+@router.get("/drive/v3/files", response_model=DriveFileList,
+            openapi_extra={"parameters": _P_DRIVE_LIST})
 async def drive_files_list(request: Request):
     conn = auth.conn(request)
     caller = _require(request)
@@ -656,7 +722,7 @@ async def drive_files_list(request: Request):
     return body
 
 
-@router.get("/drive/v3/files/{file_id}")
+@router.get("/drive/v3/files/{file_id}", openapi_extra={"parameters": _P_DRIVE_ALT})
 async def drive_files_get(file_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
@@ -677,7 +743,7 @@ async def drive_files_get(file_id: str, request: Request):
     return _drive_file(conn, row)
 
 
-@router.get("/drive/v3/files/{file_id}/export")
+@router.get("/drive/v3/files/{file_id}/export", openapi_extra={"parameters": _P_DRIVE_EXPORT})
 async def drive_files_export(file_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
@@ -698,7 +764,7 @@ async def drive_files_export(file_id: str, request: Request):
     return PlainTextResponse(body, media_type=requested)
 
 
-@router.get("/drive/v3/files/{file_id}/permissions")
+@router.get("/drive/v3/files/{file_id}/permissions", response_model=DrivePermissionList)
 async def drive_files_permissions(file_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
