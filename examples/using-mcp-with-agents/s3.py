@@ -6,9 +6,10 @@ LLM agent answer a question by calling its MCP tools (which shell the AWS CLI). 
 client honors a first-class `AWS_ENDPOINT_URL` override and SigV4-signs every call, so pointing it
 at the mock is a handful of env vars — no Docker/host-gateway tricks.
 
-NOTE: awslabs' server validates the endpoint and only accepts an **IP** address, not a hostname —
-a hostname `--url` (e.g. an ALB-fronted deployment) is rejected ("Could not resolve endpoint …").
-Reach such a deployment through an SSH tunnel and point `--url` at the forwarded local port:
+NOTE: awslabs' server (an SSRF guard in its parser's `_validate_endpoint`) only accepts a
+**loopback** endpoint — `localhost` / `127.0.0.1` / `::1`. A hostname is rejected ("Could not
+resolve endpoint …") and even a non-loopback IP is rejected ("Local endpoint was not a loopback
+address"). So to drive a remote deployment, tunnel it to loopback and point `--url` there:
     ssh -fN -L 18000:127.0.0.1:8000 user@host
     python examples/using-mcp-with-agents/s3.py --url http://127.0.0.1:18000 --access-key … --secret-key …
 
