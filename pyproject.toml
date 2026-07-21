@@ -65,6 +65,7 @@ mcp = [
     "openai>=1.40",
     "openai-agents>=0.1",
     "pyyaml>=6.0",
+    "fastmcp>=2.0",
 ]
 
 [project.urls]
