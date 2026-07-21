@@ -158,18 +158,6 @@ async def health():
     return body
 
 
-@app.get("/_mock/openapi/{source}")
-async def mcp_openapi(source: str):
-    """An MCP-ready OpenAPI spec for one source: the app's own ``/openapi.json`` sliced to that
-    source and with its GET/POST and v2/v3 fidelity aliases collapsed to one operation each, so an
-    OpenAPI→MCP bridge can feed it straight to ``FastMCP.from_openapi()`` (see ``app.openapi``)."""
-    if source not in openapi.SOURCE_PREFIXES:
-        raise HTTPException(status_code=404,
-                            detail=f"no MCP spec for {source!r}; "
-                                   f"one of {sorted(openapi.SOURCE_PREFIXES)}")
-    return openapi.build_mcp_spec(app.openapi(), source)
-
-
 @app.get("/_mock/users")
 async def mock_users():
     """Directory of every generated user + their token, for testing per-user ACL.
@@ -228,6 +216,18 @@ async def mock_credentials(request: Request):
     return {"org": app.state.acl.org_name, "token_uri": token_uri,
             "oauth_client": o.client_config(),
             "service_account": o.service_account_json(token_uri)}
+
+
+@app.get("/_mock/openapi/{source}")
+async def mock_openapi(source: str):
+    """An MCP-ready OpenAPI spec for one source: the app's own ``/openapi.json`` sliced to that
+    source and with its GET/POST and v2/v3 fidelity aliases collapsed to one operation each, so an
+    OpenAPI→MCP bridge can feed it straight to ``FastMCP.from_openapi()`` (see ``app.openapi``)."""
+    if source not in openapi.SOURCE_PREFIXES:
+        raise HTTPException(status_code=404,
+                            detail=f"no MCP spec for {source!r}; "
+                                   f"one of {sorted(openapi.SOURCE_PREFIXES)}")
+    return openapi.build_mcp_spec(app.openapi(), source)
 
 
 app.include_router(oauth.router)
