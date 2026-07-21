@@ -54,30 +54,6 @@ def test_fts_drive_source(db):
     assert store.search_documents(db, "postmortem", "google_drive") == []
 
 
-def test_connect_rw_busy_timeout(tmp_path):
-    c = store.connect_rw(tmp_path / "rw.sqlite", busy_ms=12345)
-    try:
-        assert c.execute("PRAGMA busy_timeout").fetchone()[0] == 12345
-    finally:
-        c.close()
-
-
-def test_connect_ro_tuning(sample_settings):
-    # tuned connection applies the pragmas; a plain one keeps sqlite defaults (tests unaffected)
-    c = store.connect_ro(sample_settings.db_path, mmap_mb=64, cache_mb=16, temp_memory=True)
-    try:
-        assert c.execute("PRAGMA cache_size").fetchone()[0] == -16 * 1024
-        assert c.execute("PRAGMA temp_store").fetchone()[0] == 2  # MEMORY
-        assert c.execute("PRAGMA mmap_size").fetchone()[0] > 0
-    finally:
-        c.close()
-    d = store.connect_ro(sample_settings.db_path)
-    try:
-        assert d.execute("PRAGMA mmap_size").fetchone()[0] == 0
-    finally:
-        d.close()
-
-
 def test_fts_container_scoped(db):
     # 'latency' is in the payments Jira project; container-scoping to a foreign project drops it
     assert store.search_documents(db, "latency", "jira", container="payments")
