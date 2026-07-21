@@ -12,6 +12,7 @@ truth** for the JSONL record that `app/importer/byo.py` accepts:
 | `jira.schema.json` | `jira` | `project` |
 | `confluence.schema.json` | `confluence` | `space` |
 | `notion.schema.json` | `notion` | `teamspace` |
+| `s3.schema.json` | `s3` | `bucket` |
 
 Edit these files directly to change the accepted record shape. `app/validation.py`
 loads them at runtime (keyed by each schema's `properties.source_type.const`), so a new source
@@ -80,5 +81,8 @@ python -m app.importer.byo generated.jsonl --dry-run && python -m app.importer.b
   `requested_reviewers` (+ comment `reactions`); jira `assignee`/`reporter`/`resolution`/
   `resolutiondate`/`duedate`/`fix_versions`; confluence `version_number`/`version_message`/
   `minor_edit`; notion `properties` (database schema / row values), `icon`, `cover` (+ `subtype`
-  `page|database`, `parent` for database rows). These map to the fields the real vendor APIs
-  return; everything else on each response is synthesized deterministically from the `doc_id`.
+  `page|database`, `parent` for database rows); s3 `key` (**required** — the object's path within
+  the bucket), `content_type` (MIME type, default `text/plain`), `size` (byte length, default:
+  computed from `content`), `subtype` (storage-class label, default `STANDARD`). These map to the
+  fields the real vendor APIs return; everything else on each response is synthesized
+  deterministically from the `doc_id`.
