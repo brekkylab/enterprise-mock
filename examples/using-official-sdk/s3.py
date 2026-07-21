@@ -3,16 +3,20 @@
 
     pip install -e ".[examples]"
     python examples/using-official-sdk/s3.py            # or: --url http://localhost:8000
-    python examples/using-official-sdk/s3.py --url http://localhost:8000 --token <usr-token>
+    python examples/using-official-sdk/s3.py --url http://localhost:8000 \
+        --access-key <AKIA...> --secret-key <secret>    # AWS keys from GET /_mock/users
+    python examples/using-official-sdk/s3.py --url http://localhost:8000 --user <email>  # that user's keys
 
 The only changes from talking to real S3 are ``endpoint_url`` (point it at the mock's ``/s3``) and
 path-style addressing (so the bucket stays in the path, not the hostname). boto3 SigV4-signs every
-request; the mock verifies it against the access-key/secret derived from your bearer token.
+request. S3 uses an AWS access-key/secret pair (not a bearer token): pass ``--access-key`` /
+``--secret-key`` directly, or omit them to pull a pair from ``GET /_mock/users`` (``--user <email>``
+for a specific user, else the admin keypair).
 """
 import boto3
 from botocore.config import Config
 
-from _mockserver import cli_token, s3_credentials, serve_or_connect
+from _mockserver import s3_credentials, serve_or_connect
 
 CORPUS = [
     {"source_type": "s3", "bucket": "eng-artifacts", "key": "runbooks/oncall.md",
@@ -24,9 +28,8 @@ CORPUS = [
 ]
 
 with serve_or_connect(CORPUS) as mock:
-    # --token <usr-token> (from /_mock/users) → ACL-filtered to that user; else admin sees all
-    token = cli_token(mock.token)
-    ak, sk = s3_credentials(token)
+    # AWS keypair from --access-key/--secret-key, else fetched from /_mock/users (--user or admin)
+    ak, sk = s3_credentials(mock.base_url)
     s3 = boto3.client("s3", endpoint_url=f"{mock.base_url}/s3",
                       aws_access_key_id=ak, aws_secret_access_key=sk, region_name="us-east-1",
                       config=Config(s3={"addressing_style": "path"}))

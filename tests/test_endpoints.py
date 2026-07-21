@@ -266,13 +266,21 @@ def test_user_sees_subset_of_admin(client, admin_h, tokens, ro_conn, sample_sett
 
 def test_mock_users_directory(client, tokens, org):
     # the /_mock/users directory lists every user + token (for testing per-user ACL)
+    from app import synth
     body = client.get("/_mock/users").json()
     assert body["admin_token"] == tokens["admin_token"]
+    # S3 uses an AWS keypair, not a token — the directory exposes an admin pair (derived from the
+    # admin token, which is what the SigV4 verifier resolves) so a client can use it directly
+    assert body["admin_s3_access_key_id"] == synth.s3_access_key_id(body["admin_token"])
+    assert body["admin_s3_secret_access_key"] == synth.s3_secret_access_key(body["admin_token"])
     yaml_by_email = {u["email"]: u["token"] for u in tokens["users"]}
     assert body["count"] == len(body["users"]) == len(yaml_by_email) > 0
     for u in body["users"]:
         assert u["token"] == yaml_by_email[u["email"]]  # matches data/tokens.yaml
         assert u["name"] and isinstance(u["groups"], list)
+        # each user also carries their derived S3 access-key/secret pair
+        assert u["s3_access_key_id"] == synth.s3_access_key_id(u["token"])
+        assert u["s3_secret_access_key"] == synth.s3_secret_access_key(u["token"])
     # a listed token really is ACL-scoped: it resolves and sees <= what admin sees
     u = body["users"][0]
     admin_repos = client.get(f"/github/orgs/{org}/repos",

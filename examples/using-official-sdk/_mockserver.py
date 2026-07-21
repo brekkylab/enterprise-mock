@@ -153,11 +153,28 @@ def serve_or_connect(records: list[dict], url: str | None = None):
         yield mock
 
 
-def s3_credentials(token: str) -> tuple[str, str]:
-    """Derive the (access_key_id, secret_access_key) for a bearer token — the same derivation the
-    mock's SigV4 verifier uses (app.synth), so a signed request resolves to that token's identity."""
-    from app import synth
-    return synth.s3_access_key_id(token), synth.s3_secret_access_key(token)
+def s3_credentials(base_url: str) -> tuple[str, str]:
+    """The (access_key_id, secret_access_key) an S3 client should use — S3 authenticates with an
+    AWS keypair, not a bearer token.
+
+    ``--access-key`` + ``--secret-key`` on the command line win (pass them straight through, like
+    real AWS creds). Otherwise the pair is fetched from the mock's ``GET /_mock/users``:
+    ``--user <email>`` picks that user's keys (responses are ACL-filtered to them), else the admin
+    keypair (sees everything). The keys shown there are what the mock's SigV4 verifier accepts."""
+    ak, sk = _arg("access-key"), _arg("secret-key")
+    if ak and sk:
+        print("authenticating with --access-key/--secret-key")
+        return ak, sk
+    with urllib.request.urlopen(f"{base_url.rstrip('/')}/_mock/users") as r:
+        data = json.load(r)
+    want = _arg("user")
+    if want:
+        who = next((u for u in data["users"] if u["email"] == want), None)
+        if who is None:
+            raise SystemExit(f"--user {want!r} not found in /_mock/users")
+        print(f"using S3 keys for {want} → responses are ACL-filtered to that user")
+        return who["s3_access_key_id"], who["s3_secret_access_key"]
+    return data["admin_s3_access_key_id"], data["admin_s3_secret_access_key"]
 
 
 @contextlib.contextmanager

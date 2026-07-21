@@ -125,7 +125,10 @@ async def mock_users():
 
     Not part of any emulated vendor API — a mock-only affordance. Present each user's
     token in the same shape as ``data/tokens.yaml`` plus the groups they belong to, so a
-    caller can pick a token, send it to any of the six APIs, and see the ACL-filtered view.
+    caller can pick a token, send it to any of the APIs, and see the ACL-filtered view.
+    S3 doesn't use bearer tokens — it uses AWS SigV4 — so each user (and the admin) also
+    carries an ``s3_access_key_id`` / ``s3_secret_access_key`` pair (derived from the token,
+    which is what the SigV4 verifier resolves) to hand straight to boto3 / the AWS CLI.
     Disable with ``MOCK_EXPOSE_TOKENS=false``. The admin/service token bypasses all filtering.
     """
     settings = get_settings()
@@ -139,11 +142,15 @@ async def mock_users():
     # documents, but aren't identities you can pick a token for here.
     users = [
         {"email": u["email"], "name": u["display_name"], "token": tok[u["email"]],
+         "s3_access_key_id": synth.s3_access_key_id(tok[u["email"]]),
+         "s3_secret_access_key": synth.s3_secret_access_key(tok[u["email"]]),
          "groups": store.user_group_ids(conn, u["email"])}
         for u in store.list_users(conn)
         if u["email"] in tok
     ]
     return {"org": acl.org_name, "admin_token": acl.admin_token,
+            "admin_s3_access_key_id": synth.s3_access_key_id(acl.admin_token),
+            "admin_s3_secret_access_key": synth.s3_secret_access_key(acl.admin_token),
             "count": len(users), "users": users}
 
 

@@ -62,9 +62,10 @@ read correctly.
 
 **S3** is also plain config, no monkeypatch and no pin bump: `S3Config(endpoint_url=
 s3_base_url(mock.base_url), path_style=True, aws_access_key_id=ak, aws_secret_access_key=sk)`.
-`path_style=True` keeps the bucket in the path (`/s3/<bucket>/...`) rather than the hostname, and
-`s3_credentials(token)` derives the same access-key/secret pair the mock's SigV4 verifier expects,
-so mirage/aioboto3's signed requests resolve to that token's identity.
+`path_style=True` keeps the bucket in the path (`/s3/<bucket>/...`) rather than the hostname. S3
+uses an AWS keypair (not a bearer token): pass `--access-key`/`--secret-key`, or let
+`s3_credentials(mock.base_url)` fetch a pair from `GET /_mock/users` (`--user <email>`, else
+admin) — the keys the SigV4 verifier accepts.
 
 **Google** has no such knob — its connectors read the API host from module constants that the
 base helpers return verbatim. So `_mirage.py` exposes `point_google_at(base_url)`, which rewrites

@@ -105,7 +105,7 @@ corpus are in [`examples/bring-your-own-corpus/`](examples/bring-your-own-corpus
 - Slack: `Authorization: Bearer <token>` (also accepts `?token=` / form `token`)
 - Gmail / Drive / GitHub / Notion: `Authorization: Bearer <token>`
 - Jira / Confluence: HTTP Basic `email:<token>` (the token is the password)
-- S3: AWS SigV4 — the token isn't sent directly; a deterministic access-key/secret pair is derived from it (see `examples/using-official-sdk/s3.py`)
+- S3: AWS SigV4 — not the bearer token; use the `s3_access_key_id`/`s3_secret_access_key` pair from `GET /_mock/users` (derived from the token; per-user and an admin pair). See `examples/using-official-sdk/s3.py`
 
 To discover the tokens without opening `data/tokens.yaml`, hit **`GET /_mock/users`** — a
 mock-only directory of every user (email, name, token, groups) plus the `admin_token`. Pick a

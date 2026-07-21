@@ -4,12 +4,15 @@
 Mirage mounts an S3 bucket as a filesystem under ``/s3`` — read it with plain ``ls`` / ``cat`` /
 ``grep``. S3's endpoint is a config knob (``S3Config(endpoint_url=..., path_style=True)``), so we
 point it straight at the mock — no monkeypatch (unlike Google). mirage/aioboto3 SigV4-signs every
-request; the mock verifies it against the key/secret derived from your bearer token.
+request. S3 uses an AWS access-key/secret pair (not a bearer token): pass ``--access-key`` /
+``--secret-key``, or omit them to pull a pair from ``GET /_mock/users`` (``--user <email>``, else
+admin).
 
     pip install -e ".[examples,mirage]"
     python examples/using-mirage/s3.py                              # local throwaway mock
     python examples/using-mirage/s3.py --url http://localhost:8000
-    python examples/using-mirage/s3.py --url http://localhost:8000 --token <usr-token>
+    python examples/using-mirage/s3.py --url http://localhost:8000 --access-key <AKIA...> --secret-key <secret>
+    python examples/using-mirage/s3.py --url http://localhost:8000 --user <email>
     python examples/using-mirage/s3.py --url http://localhost:8000 --fuse   # real OS mount
 
 With ``--fuse`` the tree is exposed as an actual filesystem (needs macFUSE/fuse3) and read with
@@ -22,7 +25,7 @@ import sys
 from mirage import MountMode, Workspace
 from mirage.resource.s3 import S3Config, S3Resource
 
-from _mirage import (FUSE_HELP, cli_token, lines, run_mirage, s3_base_url,
+from _mirage import (FUSE_HELP, lines, run_mirage, s3_base_url,
                      s3_credentials, serve_or_connect)
 
 BUCKET = "eng-artifacts"
@@ -35,9 +38,8 @@ CORPUS = [
 
 
 def build(mock):
-    # --token <usr-token> (from /_mock/users) → ACL-filtered to that user; else admin sees all.
-    token = cli_token(mock.token)
-    ak, sk = s3_credentials(token)
+    # AWS keypair from --access-key/--secret-key, else fetched from /_mock/users (--user or admin)
+    ak, sk = s3_credentials(mock.base_url)
     return S3Resource(S3Config(bucket=BUCKET, endpoint_url=s3_base_url(mock.base_url),
                                path_style=True, region="us-east-1",
                                aws_access_key_id=ak, aws_secret_access_key=sk))
