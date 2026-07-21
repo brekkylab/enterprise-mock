@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Drive the mock's GitHub API as MCP tools via the generic OpenAPI→MCP bridge. Self-contained.
 
-The bridge (`_bridge.py`) fetches the mock's typed `/openapi.json`, slices it to `/github`, and
+The bridge (`_openapi_bridge.py`) fetches the mock's typed `/openapi.json`, slices it to `/github`, and
 serves those operations over stdio with a `Bearer <token>` header — so retrieval is ACL-scoped by
 the token (default admin; per-user from GET /_mock/users). No vendor SDK and no vendor MCP server.
 
@@ -32,11 +32,11 @@ CORPUS = [
 QUESTION = ("Search GitHub issues for the checkout latency incident and summarize it, then find the "
             "runbook issue. Cite the titles.")
 
-_BRIDGE = str(Path(__file__).with_name("_bridge.py"))
+_BRIDGE = str(Path(__file__).with_name("_openapi_bridge.py"))
 
 
 def build_params(base_url: str, token: str) -> StdioServerParameters:
-    """Run `_bridge.py --source github` as a stdio MCP server pointed at the mock."""
+    """Run `_openapi_bridge.py --source github` as a stdio MCP server pointed at the mock."""
     return StdioServerParameters(
         command=sys.executable,
         args=[_BRIDGE, "--source", "github", "--base-url", base_url.rstrip("/"), "--token", token])

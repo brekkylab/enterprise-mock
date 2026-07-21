@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-_BRIDGE = Path(__file__).resolve().parents[1] / "examples" / "using-mcp-with-agents" / "_bridge.py"
+_BRIDGE = Path(__file__).resolve().parents[1] / "examples" / "using-mcp-with-agents" / "_openapi_bridge.py"
 _spec = importlib.util.spec_from_file_location("_bridge_under_test", _BRIDGE)
 bridge = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(bridge)

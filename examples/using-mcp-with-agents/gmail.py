@@ -2,7 +2,7 @@
 """Drive the mock's Gmail API as MCP tools via the generic OpenAPI→MCP bridge. Self-contained.
 
 Official and community Gmail MCP servers hard-wire `googleapis.com` and require real Google OAuth,
-so none can be pointed at a self-hosted mock. Instead `_bridge.py` turns the mock's typed
+so none can be pointed at a self-hosted mock. Instead `_openapi_bridge.py` turns the mock's typed
 `/openapi.json` into MCP tools: it slices to `/gmail`, dedupes operation aliases, and serves them
 over stdio with a `Bearer <token>` header — retrieval is ACL-scoped by the token (default admin;
 per-user from GET /_mock/users).
@@ -31,11 +31,11 @@ CORPUS = [
 QUESTION = ("Search Gmail for the checkout latency incident and summarize it, then find the on-call "
             "runbook email. Cite the subjects.")
 
-_BRIDGE = str(Path(__file__).with_name("_bridge.py"))
+_BRIDGE = str(Path(__file__).with_name("_openapi_bridge.py"))
 
 
 def build_params(base_url: str, token: str) -> StdioServerParameters:
-    """Run `_bridge.py --source gmail` as a stdio MCP server pointed at the mock."""
+    """Run `_openapi_bridge.py --source gmail` as a stdio MCP server pointed at the mock."""
     return StdioServerParameters(
         command=sys.executable,
         args=[_BRIDGE, "--source", "gmail", "--base-url", base_url.rstrip("/"), "--token", token])

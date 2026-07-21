@@ -2,7 +2,7 @@
 """Drive the mock's Slack Web API as MCP tools via the generic OpenAPI→MCP bridge. Self-contained.
 
 No maintained Slack MCP server accepts a base-URL override (they hard-wire slack.com), so instead
-`_bridge.py` turns the mock's typed `/openapi.json` into MCP tools: it slices to `/slack/api`,
+`_openapi_bridge.py` turns the mock's typed `/openapi.json` into MCP tools: it slices to `/slack/api`,
 dedupes the GET/POST operation aliases, and serves them over stdio with a `Bearer <token>` header —
 so retrieval is ACL-scoped by the token (default admin; per-user from GET /_mock/users).
 
@@ -30,11 +30,11 @@ CORPUS = [
 QUESTION = ("Search Slack for the checkout latency incident and summarize it, then find the on-call "
             "runbook message. Cite the channels.")
 
-_BRIDGE = str(Path(__file__).with_name("_bridge.py"))
+_BRIDGE = str(Path(__file__).with_name("_openapi_bridge.py"))
 
 
 def build_params(base_url: str, token: str) -> StdioServerParameters:
-    """Run `_bridge.py --source slack` as a stdio MCP server pointed at the mock."""
+    """Run `_openapi_bridge.py --source slack` as a stdio MCP server pointed at the mock."""
     return StdioServerParameters(
         command=sys.executable,
         args=[_BRIDGE, "--source", "slack", "--base-url", base_url.rstrip("/"), "--token", token])

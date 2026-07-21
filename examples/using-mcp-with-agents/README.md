@@ -14,7 +14,7 @@ service (like the other `examples/` dirs) — run the one you want:
   (uvx/Python) — it shells the AWS CLI, whose boto3 client honors a first-class
   `AWS_ENDPOINT_URL` override and SigV4-signs every call; a broad AWS-CLI wrapper, so the agent
   runs `aws s3api …` commands.
-- **`github.py`** via the **generic OpenAPI→MCP bridge** (`_bridge.py`, Python/FastMCP) — no vendor
+- **`github.py`** via the **generic OpenAPI→MCP bridge** (`_openapi_bridge.py`, Python/FastMCP) — no vendor
   MCP server exists that can be pointed at a self-hosted mock, so instead the bridge turns the
   mock's own typed `/openapi.json` into MCP tools. See "How the OpenAPI→MCP bridge connects" below.
   This unlocks the sources with no base-URL-switchable vendor server; more sources
@@ -24,7 +24,7 @@ service (like the other `examples/` dirs) — run the one you want:
   (`/slack/api/*`) as tools instead.
 - **`gmail.py`** via the same **OpenAPI→MCP bridge** — Gmail MCP servers hard-wire `googleapis.com`
   and need real Google OAuth, so the bridge serves the mock's Gmail API (`/gmail/*`) as tools.
-- **`drive.py`** via the same **OpenAPI→MCP bridge** — likewise for Google Drive (`/drive/*`).
+- **`gdrive.py`** via the same **OpenAPI→MCP bridge** — likewise for Google Drive (`/drive/*`).
 
 Each service file builds its own MCP `StdioServerParameters` and calls `run_agent(...)`. Two shared
 helpers:
@@ -147,11 +147,11 @@ address`. To drive a remote deployment, tunnel it to loopback and point `--url` 
 `--url http://127.0.0.1:18000 --access-key … --secret-key …`. (boto3 and mirage have no such
 restriction — they take the hostname directly.)
 
-## How the OpenAPI→MCP bridge connects (`github.py` / `slack.py` / `gmail.py` / `drive.py`)
+## How the OpenAPI→MCP bridge connects (`github.py` / `slack.py` / `gmail.py` / `gdrive.py`)
 
 These four sources have no vendor MCP server that accepts a base-URL override (see "Why these need
 the bridge" below). Instead of a vendor server, each launcher runs the **generic bridge**
-`_bridge.py` (Python, [FastMCP](https://gofastmcp.com)) as a stdio subprocess:
+`_openapi_bridge.py` (Python, [FastMCP](https://gofastmcp.com)) as a stdio subprocess:
 
 - it fetches the mock's own **`/openapi.json`** — now a typed contract (the routers declare their
   query params and response models), so the tools carry real parameters and schemas;
@@ -164,15 +164,15 @@ the bridge" below). Instead of a vendor server, each launcher runs the **generic
 
 stdio (not streamable-HTTP): FastMCP's HTTP mode has a known bug forwarding the client's
 `Authorization` header downstream. Auth is the same mock token as Notion (`--token`, default admin;
-per-user from `GET /_mock/users`). Adding a source is one `SOURCES` entry in `_bridge.py` plus a
+per-user from `GET /_mock/users`). Adding a source is one `SOURCES` entry in `_openapi_bridge.py` plus a
 thin launcher — same "one entry per backend" shape as the vendor examples.
 
 **Notion and Atlassian** already have vendor-server launchers above, but they also work through the
-generic bridge (no vendor server) — run `_bridge.py` directly:
+generic bridge (no vendor server) — run `_openapi_bridge.py` directly:
 
 ```bash
-python examples/using-mcp-with-agents/_bridge.py --source notion    --base-url <mock> --token <t>
-python examples/using-mcp-with-agents/_bridge.py --source atlassian --base-url <mock> --token <t> --username svc@example.com
+python examples/using-mcp-with-agents/_openapi_bridge.py --source notion    --base-url <mock> --token <t>
+python examples/using-mcp-with-agents/_openapi_bridge.py --source atlassian --base-url <mock> --token <t> --username svc@example.com
 ```
 
 Atlassian authenticates with HTTP Basic (`--username` + the mock token as the password), and its
@@ -192,4 +192,4 @@ it:
 - **Slack** — no API-base override in any maintained server (hard-wired to `slack.com`).
   **→ driven via the bridge (`slack.py`) instead.**
 - **Gmail / Google Drive** — official and community servers hard-wire `googleapis.com` and
-  require real Google OAuth; no endpoint override. **→ driven via the bridge (`gmail.py`, `drive.py`).**
+  require real Google OAuth; no endpoint override. **→ driven via the bridge (`gmail.py`, `gdrive.py`).**

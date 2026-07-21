@@ -8,8 +8,8 @@ per-token ACL is enforced on every tool call.
 
 stdio only: FastMCP's streamable-HTTP mode has a known Authorization-forwarding bug.
 
-    python _bridge.py --source github --base-url http://127.0.0.1:8000 --token <mock-token>
-    python _bridge.py --source atlassian --base-url https://host --token <t> --username svc@example.com
+    python _openapi_bridge.py --source github --base-url http://127.0.0.1:8000 --token <mock-token>
+    python _openapi_bridge.py --source atlassian --base-url https://host --token <t> --username svc@example.com
 """
 from __future__ import annotations
 
