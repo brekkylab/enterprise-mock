@@ -153,6 +153,13 @@ def serve_or_connect(records: list[dict], url: str | None = None):
         yield mock
 
 
+def s3_credentials(token: str) -> tuple[str, str]:
+    """Derive the (access_key_id, secret_access_key) for a bearer token — the same derivation the
+    mock's SigV4 verifier uses (app.synth), so a signed request resolves to that token's identity."""
+    from app import synth
+    return synth.s3_access_key_id(token), synth.s3_secret_access_key(token)
+
+
 @contextlib.contextmanager
 def mock_server(records: list[dict]):
     with tempfile.TemporaryDirectory() as data_dir:

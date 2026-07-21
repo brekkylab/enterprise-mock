@@ -6,7 +6,7 @@ The only change from talking to the real service is the base URL.
 
 ```bash
 pip install -e ".[examples]"
-python examples/using-official-sdk/slack.py     # or gmail.py, gdrive.py, github.py, jira.py, confluence.py, notion.py
+python examples/using-official-sdk/slack.py     # or gmail.py, gdrive.py, github.py, jira.py, confluence.py, notion.py, s3.py
 ```
 
 Pass `--url http://host:port` to point a script at an already-running mock instead; if it's
@@ -61,6 +61,7 @@ library's own token exchange runs against the mock's `POST /oauth2/token` in bot
 | Gmail | `google-api-python-client` | `build("gmail","v1", …, client_options=ClientOptions(api_endpoint="http://localhost:8000"))` |
 | Drive | `google-api-python-client` | `build("drive","v3", …, client_options=ClientOptions(api_endpoint="http://localhost:8000/drive/v3"))` |
 | Notion | `notion-client` | `Client(auth=T, base_url="http://localhost:8000/notion")` (SDK appends `/v1/`) |
+| S3 | `boto3` | `client("s3", endpoint_url="http://localhost:8000/s3", config=Config(s3={"addressing_style":"path"}))` |
 
 (`T` is a token from `data/tokens.yaml` — the admin token sees everything; a per-user token is
 scoped to that user's ACL. For Google, credentials come from a service account issued by

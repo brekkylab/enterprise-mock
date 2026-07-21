@@ -48,6 +48,7 @@ examples = [
     "google-api-python-client>=2.120",
     "google-auth>=2.29",
     "notion-client>=3.1",
+    "boto3>=1.34",
 ]
 # Mirage examples (examples/using-mirage/): drive the mock through mirage's virtual filesystem.
 # The [fuse] extra (mfusepy) powers the optional `--fuse` real-OS-mount path; mounting also needs
