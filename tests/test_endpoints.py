@@ -848,3 +848,16 @@ def test_atlassian_responses_unchanged_by_enrichment(client, admin_h):
     page = client.get(f"/atlassian/wiki/rest/api/content/{cid}", params={"expand": "body.storage"},
                       headers=admin_h).json()
     assert "body" in page and "storage" in page["body"]  # expand survives
+
+
+# --- /_mock/openapi/{source}: the MCP-ready spec endpoint (issue #4 bridge) ---------------
+
+def test_mock_openapi_spec_endpoint(client):
+    gh = client.get("/_mock/openapi/github")
+    assert gh.status_code == 200
+    ids = [op["operationId"]
+           for item in gh.json()["paths"].values()
+           for m, op in item.items() if isinstance(op, dict) and "operationId" in op]
+    assert ids and len(ids) == len(set(ids)), "served spec must have unique operationIds (bridge-ready)"
+    assert client.get("/_mock/openapi/s3").status_code == 404  # SigV4 — intentionally no bridge
+    assert client.get("/_mock/openapi/nope").status_code == 404

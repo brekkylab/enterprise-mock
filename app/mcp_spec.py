@@ -1,16 +1,21 @@
 """Derive an MCP-ready OpenAPI spec from the mock's own ``/openapi.json``.
 
-The mock exposes some routes multiple ways for vendor fidelity — Slack methods accept GET **and**
-POST on one route, Jira aliases ``/rest/api/2`` and ``/rest/api/3``, Drive's ``batch`` is
-double-mounted — and FastAPI's auto operationId generation collapses each such pair to a single id,
-so the raw ``/openapi.json`` carries ~14 *duplicate* operationIds. An OpenAPI→MCP bridge keys its
-tools by operationId, so a raw spec would collide (one tool silently overwriting another).
+For vendor fidelity several routes accept **more than one HTTP method on a single route** — every
+Slack Web API method takes GET and POST (``api_route(methods=["GET","POST"])``), Jira's
+``search/jql`` likewise on both its ``/rest/api/2`` and ``/rest/api/3`` aliases, S3's object route
+GET and HEAD. FastAPI derives one operationId *per route* and reuses it for each method, so the raw
+``/openapi.json`` ends up with ~14 *duplicate* operationIds. An OpenAPI→MCP bridge keys its tools by
+operationId, so a raw spec would collide (one tool silently overwriting the other).
 
-This module slices the spec to one source's paths and collapses those fidelity aliases to one
-callable operation each (prefer GET, then fewest path params, then the higher-versioned path). The
-result is served at ``GET /mcp/openapi/{source}`` so a bridge can consume it directly — no
-client-side spec surgery. S3 is intentionally absent: it is SigV4-signed, which a static bridge
-auth header can't produce.
+This can't be fixed with FastAPI's operationId hooks (``operation_id=`` / ``generate_unique_id_function``):
+those run *per route* and return a single id for all of a route's methods — there is no per-method
+hook, so a GET+POST route is inherently one id. Splitting every such route into single-method routes
+would be invasive and still leave a redundant GET-tool + POST-tool pair. Instead this module keeps
+the fidelity-shaped routes as-is and, for MCP consumers, slices the spec to one source's paths and
+collapses each route's methods to one callable operation (prefer GET, then fewest path params, then
+the lexicographically greatest path). Served at ``GET /_mock/openapi/{source}`` so a bridge consumes
+it directly — no client-side spec surgery. S3 is intentionally absent: it is SigV4-signed, which a
+static bridge auth header can't produce.
 """
 from __future__ import annotations
 

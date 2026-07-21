@@ -158,7 +158,7 @@ async def health():
     return body
 
 
-@app.get("/mcp/openapi/{source}")
+@app.get("/_mock/openapi/{source}")
 async def mcp_openapi(source: str):
     """An MCP-ready OpenAPI spec for one source: the app's own ``/openapi.json`` sliced to that
     source and with its GET/POST and v2/v3 fidelity aliases collapsed to one operation each, so an

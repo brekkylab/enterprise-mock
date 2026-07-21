@@ -1,4 +1,4 @@
-"""Unit tests for app.mcp_spec — the MCP-ready OpenAPI derivation served at /mcp/openapi/{source}.
+"""Unit tests for app.mcp_spec — the MCP-ready OpenAPI derivation served at /_mock/openapi/{source}.
 
 This is app code (not examples), so it's imported and tested directly: the slice/dedupe logic that
 lets an OpenAPI→MCP bridge consume the mock's spec without operationId collisions.
@@ -38,7 +38,8 @@ def test_dedupe_get_post_same_path_keeps_get():
     assert set(out["paths"]["/slack/api/conversations.history"]) == {"get"}
 
 
-def test_dedupe_v2_v3_keeps_v3():
+def test_dedupe_same_id_across_paths_prefers_greater_path():
+    # tie-break when one id spans two paths of equal method/params: keep the greater path
     spec = {"paths": {
         "/rest/api/2/issue/{key}": {"get": {"operationId": "j"}},
         "/rest/api/3/issue/{key}": {"get": {"operationId": "j"}}}}

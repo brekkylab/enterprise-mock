@@ -154,7 +154,7 @@ the bridge" below). Instead of a vendor server, each launcher runs the **generic
 `_openapi_bridge.py` (Python, [FastMCP](https://gofastmcp.com)) as a stdio subprocess. The bridge is
 deliberately thin — the mock does the spec work:
 
-- the mock serves an **MCP-ready spec per source** at **`GET /mcp/openapi/<source>`** — its own
+- the mock serves an **MCP-ready spec per source** at **`GET /_mock/openapi/<source>`** — its own
   typed `/openapi.json` (the routers declare query params and response models) sliced to that
   source and with the GET/POST and Jira v2/v3 fidelity aliases collapsed to one operation each
   (the raw spec carries ~14 duplicate operationIds, which an MCP tool set can't have). This lives
@@ -179,7 +179,7 @@ python examples/using-mcp-with-agents/_openapi_bridge.py --source atlassian --ba
 Atlassian authenticates with HTTP Basic (`--username` + the mock token as the password), and its
 `SOURCE_PREFIXES` entry covers both the `/atlassian` (Jira) and `/wiki` (Confluence) path roots.
 **S3 is the one source with no bridge** — it is SigV4-signed (a static `Authorization` header can't
-sign each request), so it is absent from `/mcp/openapi/*`; use the vendor `s3.py` example.
+sign each request), so it is absent from `/_mock/openapi/*`; use the vendor `s3.py` example.
 
 ## Why these need the bridge (no base-URL-switchable vendor server)
 
