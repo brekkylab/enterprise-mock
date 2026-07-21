@@ -85,3 +85,11 @@ def test_s3_etag_is_quoted_md5_of_content():
 def test_s3_timestamps():
     assert synth.s3_iso(1_700_000_000).endswith("Z") and "T" in synth.s3_iso(1_700_000_000)
     assert synth.s3_http_date(1_700_000_000).endswith(" GMT")
+
+
+def test_confluence_space_key_unique_for_colliding_names():
+    # initials alone collide; the hash suffix must disambiguate
+    a = synth.confluence_space_key("eng-serving-runtime")
+    b = synth.confluence_space_key("eng-sre/runbooks")
+    assert a != b
+    assert synth.confluence_space_key("eng-serving-runtime") == a  # deterministic

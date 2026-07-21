@@ -174,7 +174,12 @@ def jira_project_key(container: str) -> str:
 
 
 def confluence_space_key(container: str) -> str:
-    return _key(container, "SPACE")
+    """A space key that is unique per container: the readable word-initials prefix (see
+    :func:`_key`) plus a short hash of the full name. Initials alone collide — e.g.
+    ``eng-serving-runtime`` and ``eng-sre/runbooks`` both reduce to ``ESR`` — which made distinct
+    spaces share a key and the router's reverse lookup ambiguous. The 6-hex suffix disambiguates
+    (deterministically, so keys stay stable across imports)."""
+    return _key(container, "SPACE") + _digest(container)[:6].upper()
 
 
 # --- Notion --------------------------------------------------------------------
