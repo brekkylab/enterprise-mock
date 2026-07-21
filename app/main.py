@@ -16,7 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app import mcp_spec, store, synth
+from app import openapi, store, synth
 from app.acl import Acl
 from app.config import get_settings
 from app.oauth import Oauth
@@ -162,12 +162,12 @@ async def health():
 async def mcp_openapi(source: str):
     """An MCP-ready OpenAPI spec for one source: the app's own ``/openapi.json`` sliced to that
     source and with its GET/POST and v2/v3 fidelity aliases collapsed to one operation each, so an
-    OpenAPI→MCP bridge can feed it straight to ``FastMCP.from_openapi()`` (see ``app.mcp_spec``)."""
-    if source not in mcp_spec.SOURCE_PREFIXES:
+    OpenAPI→MCP bridge can feed it straight to ``FastMCP.from_openapi()`` (see ``app.openapi``)."""
+    if source not in openapi.SOURCE_PREFIXES:
         raise HTTPException(status_code=404,
                             detail=f"no MCP spec for {source!r}; "
-                                   f"one of {sorted(mcp_spec.SOURCE_PREFIXES)}")
-    return mcp_spec.build_mcp_spec(app.openapi(), source)
+                                   f"one of {sorted(openapi.SOURCE_PREFIXES)}")
+    return openapi.build_mcp_spec(app.openapi(), source)
 
 
 @app.get("/_mock/users")

@@ -1,4 +1,4 @@
-"""Unit tests for app.mcp_spec — the MCP-ready OpenAPI derivation served at /_mock/openapi/{source}.
+"""Unit tests for app.openapi — the MCP-ready OpenAPI derivation served at /_mock/openapi/{source}.
 
 This is app code (not examples), so it's imported and tested directly: the slice/dedupe logic that
 lets an OpenAPI→MCP bridge consume the mock's spec without operationId collisions.
@@ -9,7 +9,7 @@ import warnings
 
 import pytest
 
-from app import mcp_spec
+from app import openapi
 
 
 def _doc():
@@ -21,20 +21,20 @@ def _doc():
 
 
 def test_slice_keeps_only_prefix():
-    out = mcp_spec.slice_spec(_doc(), ["/github"])
+    out = openapi.slice_spec(_doc(), ["/github"])
     assert set(out["paths"]) == {"/github/repos/{owner}/{repo}/issues", "/github/search/issues"}
     assert "/notion/v1/search" in _doc()["paths"]  # original untouched
 
 
 def test_slice_empty_raises():
     with pytest.raises(ValueError, match="no paths matched"):
-        mcp_spec.slice_spec(_doc(), ["/slack/api"])
+        openapi.slice_spec(_doc(), ["/slack/api"])
 
 
 def test_dedupe_get_post_same_path_keeps_get():
     spec = {"paths": {"/slack/api/conversations.history": {
         "get": {"operationId": "x"}, "post": {"operationId": "x"}}}}
-    out = mcp_spec.dedupe_operations(spec)
+    out = openapi.dedupe_operations(spec)
     assert set(out["paths"]["/slack/api/conversations.history"]) == {"get"}
 
 
@@ -43,19 +43,19 @@ def test_dedupe_same_id_across_paths_prefers_greater_path():
     spec = {"paths": {
         "/rest/api/2/issue/{key}": {"get": {"operationId": "j"}},
         "/rest/api/3/issue/{key}": {"get": {"operationId": "j"}}}}
-    assert set(mcp_spec.dedupe_operations(spec)["paths"]) == {"/rest/api/3/issue/{key}"}
+    assert set(openapi.dedupe_operations(spec)["paths"]) == {"/rest/api/3/issue/{key}"}
 
 
 def test_dedupe_prefers_fewer_path_params():
     spec = {"paths": {
         "/batch": {"post": {"operationId": "b"}},
         "/batch/{api}/{version}": {"post": {"operationId": "b"}}}}
-    assert set(mcp_spec.dedupe_operations(spec)["paths"]) == {"/batch"}
+    assert set(openapi.dedupe_operations(spec)["paths"]) == {"/batch"}
 
 
 def test_build_mcp_spec_rejects_unknown_source():
     with pytest.raises(KeyError):
-        mcp_spec.build_mcp_spec(_doc(), "s3")  # SigV4 — intentionally no bridge
+        openapi.build_mcp_spec(_doc(), "s3")  # SigV4 — intentionally no bridge
 
 
 def test_build_mcp_spec_resolves_all_real_collisions():
@@ -65,6 +65,6 @@ def test_build_mcp_spec_resolves_all_real_collisions():
     from app.main import app
 
     full = app.openapi()
-    for source in mcp_spec.SOURCE_PREFIXES:
-        spec = mcp_spec.build_mcp_spec(full, source)  # raises ValueError if a collision survives
+    for source in openapi.SOURCE_PREFIXES:
+        spec = openapi.build_mcp_spec(full, source)  # raises ValueError if a collision survives
         assert spec["paths"], f"{source} sliced to empty"

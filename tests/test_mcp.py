@@ -179,10 +179,10 @@ def test_mcp_s3_lists_objects(live_server):
 def _bridge_call(base, source, token, *, tool_pred, args, ok_pred, username=None) -> bool:
     """Exercise the OpenAPI→MCP bridge path WITHOUT touching ``examples/``.
 
-    Fetches the mock's MCP-ready spec (``GET /_mock/openapi/<source>`` — produced by ``app.mcp_spec``,
+    Fetches the mock's MCP-ready spec (``GET /_mock/openapi/<source>`` — produced by ``app.openapi``,
     which owns the slice/dedupe logic) and serves it via an in-memory FastMCP client over an auth'd
     httpx client. That is the whole of what the example bridge does; the meaningful logic lives in
-    the app and is unit-tested in ``tests/test_mcp_spec.py``. Returns ``ok_pred`` over the tool's
+    the app and is unit-tested in ``tests/test_openapi.py``. Returns ``ok_pred`` over the tool's
     response text; a blocked/errored call is ``False``."""
     import base64 as b64
 
