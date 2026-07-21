@@ -19,6 +19,14 @@ static bridge auth header can't produce.
 """
 from __future__ import annotations
 
+import warnings
+
+# Building the app's /openapi.json (FastAPI) warns "Duplicate Operation ID" once per multi-method
+# route described above. Those duplicates are expected and are collapsed by build_mcp_spec, so the
+# warning is pure noise — silence just that message. Lives here (imported by app.main before any
+# spec is built) beside the rationale for the duplicates it concerns.
+warnings.filterwarnings("ignore", message="Duplicate Operation ID", category=UserWarning)
+
 # source -> the path prefix(es) whose operations that source's MCP server should expose.
 SOURCE_PREFIXES: dict[str, list[str]] = {
     "github": ["/github"],
