@@ -733,3 +733,46 @@ def test_gmail_responses_unchanged_by_enrichment(client, admin_h):
                          headers=admin_h).json()
         for k in ("id", "threadId", "labelIds", "snippet", "internalDate", "sizeEstimate", "payload"):
             assert k in msg, f"gmail message missing {k} (fidelity regression)"
+
+
+# --- OpenAPI enrichment: drive ------------------------------------------------------------
+
+def test_drive_files_documents_q_param(client):
+    op = client.get("/openapi.json").json()["paths"]["/drive/v3/files"]["get"]
+    names = {p["name"] for p in op.get("parameters", [])}
+    assert {"q", "pageSize", "pageToken", "fields"} <= names
+
+
+def test_drive_files_has_typed_response_schema(client):
+    op = client.get("/openapi.json").json()["paths"]["/drive/v3/files"]["get"]
+    schema = op["responses"]["200"]["content"]["application/json"]["schema"]
+    assert schema != {}
+
+
+def _drive_find(client, admin_h, name_substr):
+    j = client.get("/drive/v3/files", params={"q": f"name contains '{name_substr}'"},
+                   headers=admin_h).json()
+    return j["files"][0] if j.get("files") else None
+
+
+def test_drive_responses_unchanged_by_enrichment(client, admin_h):
+    lst = client.get("/drive/v3/files", headers=admin_h).json()
+    assert lst["kind"] == "drive#fileList" and "files" in lst
+    doc = _drive_find(client, admin_h, "Brand")
+    assert doc is not None
+    full = client.get(f"/drive/v3/files/{doc['id']}", headers=admin_h).json()
+    for k in ("kind", "id", "name", "mimeType", "createdTime", "modifiedTime", "owners",
+              "webViewLink", "capabilities"):
+        assert k in full, f"drive file missing {k} (fidelity regression)"
+
+
+def test_drive_export_and_media_stay_non_json(client, admin_h):
+    # A native doc exports as PlainTextResponse; response_model must NOT be attached to these.
+    doc = _drive_find(client, admin_h, "Brand")
+    exp = client.get(f"/drive/v3/files/{doc['id']}/export",
+                     params={"mimeType": "text/plain"}, headers=admin_h)
+    assert exp.status_code == 200 and "application/json" not in exp.headers["content-type"]
+    # A binary (pdf) downloads raw via alt=media.
+    pdf = _drive_find(client, admin_h, "Whitepaper")
+    med = client.get(f"/drive/v3/files/{pdf['id']}", params={"alt": "media"}, headers=admin_h)
+    assert med.status_code == 200 and "application/json" not in med.headers["content-type"]

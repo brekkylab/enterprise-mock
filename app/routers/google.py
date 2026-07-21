@@ -68,6 +68,23 @@ def _gqp(name: str, typ: str = "string", required: bool = False) -> dict:
 _P_GMAIL_LIST = [_gqp("maxResults", "integer"), _gqp("pageToken"), _gqp("q")]
 _P_GMAIL_FORMAT = [_gqp("format")]
 
+
+class DriveFileList(_GLoose):
+    kind: str = "drive#fileList"
+    files: list[dict] = []
+
+
+class DrivePermissionList(_GLoose):
+    kind: str = "drive#permissionList"
+    permissions: list[dict] = []
+
+
+# drive_files_get / .export return raw Response/PlainTextResponse on some branches — they get
+# openapi_extra params only (no JSON response_model, which would mis-serialize the raw body).
+_P_DRIVE_LIST = [_gqp("pageSize", "integer"), _gqp("pageToken"), _gqp("q"), _gqp("fields")]
+_P_DRIVE_ALT = [_gqp("alt")]
+_P_DRIVE_EXPORT = [_gqp("mimeType", required=True)]
+
 DRIVE_DOC_MIME = "application/vnd.google-apps.document"
 
 # --- Google-style multipart/mixed batch (google-api-python-client BatchHttpRequest) -------------
@@ -644,7 +661,8 @@ async def drive_shared_drives(request: Request):
     return {"kind": "drive#driveList", "drives": []}
 
 
-@router.get("/drive/v3/files")
+@router.get("/drive/v3/files", response_model=DriveFileList,
+            openapi_extra={"parameters": _P_DRIVE_LIST})
 async def drive_files_list(request: Request):
     conn = auth.conn(request)
     caller = _require(request)
@@ -704,7 +722,7 @@ async def drive_files_list(request: Request):
     return body
 
 
-@router.get("/drive/v3/files/{file_id}")
+@router.get("/drive/v3/files/{file_id}", openapi_extra={"parameters": _P_DRIVE_ALT})
 async def drive_files_get(file_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
@@ -725,7 +743,7 @@ async def drive_files_get(file_id: str, request: Request):
     return _drive_file(conn, row)
 
 
-@router.get("/drive/v3/files/{file_id}/export")
+@router.get("/drive/v3/files/{file_id}/export", openapi_extra={"parameters": _P_DRIVE_EXPORT})
 async def drive_files_export(file_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
@@ -746,7 +764,7 @@ async def drive_files_export(file_id: str, request: Request):
     return PlainTextResponse(body, media_type=requested)
 
 
-@router.get("/drive/v3/files/{file_id}/permissions")
+@router.get("/drive/v3/files/{file_id}/permissions", response_model=DrivePermissionList)
 async def drive_files_permissions(file_id: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)

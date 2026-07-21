@@ -263,3 +263,28 @@ def test_mcp_gmail_bridge_acl_enforced(live_server):
 
     assert reads(settings.admin_token), "admin should read the message through the bridge"
     assert not reads(user["token"]), f"{email} should be blocked from the message via the bridge"
+
+
+# ------------------------------------------------------ Drive (generic OpenAPI→MCP bridge)
+
+def test_mcp_drive_bridge_acl_enforced(live_server):
+    """A Drive file the admin can read via the bridge's files.get tool is 404 for a scoped user."""
+    pytest.importorskip("fastmcp")
+    base, settings = live_server
+    user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
+    row, email = _restricted_doc(settings, user["token"], "google_drive")
+    assert row is not None, f"no Drive file is ACL-restricted from {email} in the sample corpus"
+    file_id = row["doc_id"]
+
+    def reads(token):
+        try:
+            return asyncio.run(_call(
+                _bridge_params("drive", base, token),
+                tool_pred=lambda n: n.startswith("drive_files_get"),
+                args={"file_id": file_id},
+                ok_pred=lambda t: '"name"' in t and '"mimeType"' in t))
+        except Exception:  # noqa: BLE001
+            return False
+
+    assert reads(settings.admin_token), "admin should read the file through the bridge"
+    assert not reads(user["token"]), f"{email} should be blocked from the file via the bridge"
