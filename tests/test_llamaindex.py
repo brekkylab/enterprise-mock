@@ -222,3 +222,79 @@ def test_notion(live_server):
     docs = reader.load_data(page_ids=[synth.notion_id("nt-runbook")])
     assert docs, "expected the runbook page as a Document"
     assert any("Check dashboards" in d.text for d in docs)  # SAMPLE nt-runbook body, case-correct
+
+
+def _point_gmail_at(base_url: str) -> None:
+    """Redirect GmailReader at the mock.
+
+    GmailReader builds its Google service with googleapiclient's `build` and no host override.
+    Its `load_data()` does a *local* `from googleapiclient.discovery import build` on every call
+    rather than importing it at module scope, so there is no `gm.build` module attribute to wrap
+    (confirmed empirically: `'build' in dir(llama_index.readers.google.gmail.base)` is `False`).
+    Wrap `googleapiclient.discovery.build` itself instead — the local import re-reads whatever
+    that symbol currently is at call time, so patching it one level up the chain has the same
+    effect as patching `gm.build` would. Injects `client_options(api_endpoint=...)` +
+    `static_discovery=True`, same as `using-official-sdk/gmail.py` (for Gmail the api_endpoint is
+    the base itself, NOT `base + /gmail/v1` — the bundled discovery doc's rootUrl is replaced and
+    the client appends `/gmail/v1`). Idempotent; fails loudly if the target `build` symbol is
+    gone rather than silently letting the reader hit real googleapis.com.
+
+    Duplicated from `examples/using-llamaindex-readers/_llamaindex.py:point_gmail_at` (tests
+    don't import from examples)."""
+    from google.api_core.client_options import ClientOptions
+    from googleapiclient import discovery
+
+    base = base_url.rstrip("/")
+    if not hasattr(discovery, "build"):
+        raise RuntimeError("point_gmail_at: googleapiclient.discovery.build is gone — update the shim")
+    if getattr(discovery.build, "_points_at_mock", False):
+        return
+
+    _real_build = discovery.build
+
+    def _build(*args, **kwargs):
+        kwargs.setdefault("static_discovery", True)
+        kwargs["client_options"] = ClientOptions(api_endpoint=base)  # gmail: rootUrl replaced
+        return _real_build(*args, **kwargs)
+
+    _build._points_at_mock = True
+    discovery.build = _build
+
+
+def test_gmail(live_server):
+    pytest.importorskip("llama_index.readers.google")
+    from google.oauth2.credentials import Credentials
+    from googleapiclient import discovery
+    from llama_index.readers.google import GmailReader
+
+    base, admin = _base_token(live_server)
+    import llama_index.readers.google.gmail.base as gm
+
+    # Both patches below are process-global (module attribute / class method), so restore them
+    # after the test — left in place they'd leak into later tests in the same session, e.g.
+    # test_sdk.py's `_gmail_svc` calling the real `googleapiclient.discovery.build` directly with
+    # its own `client_options` (this shim's wrapper would clobber that with a stale base_url from
+    # this test's already-shut-down live_server).
+    _orig_build = discovery.build
+    _orig_get_credentials = gm.GmailReader._get_credentials
+    try:
+        _point_gmail_at(base)
+
+        # The installed GmailReader._get_credentials() unconditionally runs a local disk-based
+        # OAuth flow (reads token.json / credentials.json off disk) every call, regardless of
+        # whether a `service` (or any other credential) was already supplied — there's no
+        # constructor hook to inject credentials directly (setting `reader.credentials` raises
+        # `ValueError`: it isn't a declared pydantic field on this reader version). Patch the
+        # method to hand back the admin bearer credential instead of touching disk;
+        # `load_data()` then builds its own service via the wrapped `build` (since `service` is
+        # left falsy), landing on the mock.
+        gm.GmailReader._get_credentials = lambda self: Credentials(token=admin)
+
+        reader = GmailReader(query="", service=None, use_iterative_parser=True, max_results=10,
+                              results_per_page=None)
+        docs = reader.load_data()
+        assert docs, "expected at least one Gmail Document"
+        assert any("board" in d.text.lower() for d in docs)  # SAMPLE ceo mailbox
+    finally:
+        discovery.build = _orig_build
+        gm.GmailReader._get_credentials = _orig_get_credentials

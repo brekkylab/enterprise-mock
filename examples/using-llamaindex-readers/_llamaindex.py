@@ -13,8 +13,14 @@ S3 `s3_endpoint_url`); four hardcode it and need a small shim, all isolated here
     duration of construction (restored after), so even that first call lands on the mock (which
     now serves `api.test`, see `app/routers/slack.py`) — then sets `_client.base_url` again
     explicitly, since slack_sdk builds request URLs as `base_url + method`.
-  - Gmail/Drive: `point_gmail_at` / `point_drive_at` wrap the reader module's `build` symbol to
-    inject `client_options(api_endpoint=...)` + `static_discovery=True` (as the SDK examples do).
+  - Gmail/Drive: `point_gmail_at` / `point_drive_at` wrap a `build` symbol to inject
+    `client_options(api_endpoint=...)` + `static_discovery=True` (as the SDK examples do).
+    `GmailReader.load_data()` does a *local* `from googleapiclient.discovery import build` on
+    every call rather than importing it at module scope (confirmed empirically —
+    `'build' in dir(llama_index.readers.google.gmail.base)` is `False`), so there is no
+    `gm.build` module attribute to wrap; `point_gmail_at` wraps `googleapiclient.discovery.build`
+    itself instead, one level up the chain (the local import re-reads whatever that symbol
+    currently is at call time, so this has the same effect).
   - Notion: `patch_notion_at` rebinds the module-level URL constants.
 
 This module also re-exports the serve/credential helpers from the sibling
@@ -163,6 +169,41 @@ def patch_s3fs_walk() -> None:
 
     _walk._mock_patched = True
     S3FileSystem._walk = _walk
+
+
+def point_gmail_at(base_url: str) -> None:
+    """Redirect GmailReader at the mock.
+
+    GmailReader builds its Google service with googleapiclient's `build` and no host override.
+    Its `load_data()` does a *local* `from googleapiclient.discovery import build` on every call
+    rather than importing it at module scope, so there is no `gm.build` module attribute to wrap
+    (confirmed empirically: `'build' in dir(llama_index.readers.google.gmail.base)` is `False`).
+    Wrap `googleapiclient.discovery.build` itself instead — the local import re-reads whatever
+    that symbol currently is at call time, so patching it one level up the chain has the same
+    effect as patching `gm.build` would. Injects `client_options(api_endpoint=...)` +
+    `static_discovery=True`, same as `using-official-sdk/gmail.py` (for Gmail the api_endpoint is
+    the base itself, NOT `base + /gmail/v1` — the bundled discovery doc's rootUrl is replaced and
+    the client appends `/gmail/v1`). Idempotent; fails loudly if the target `build` symbol is
+    gone rather than silently letting the reader hit real googleapis.com.
+    """
+    from google.api_core.client_options import ClientOptions
+    from googleapiclient import discovery
+
+    base = base_url.rstrip("/")
+    if not hasattr(discovery, "build"):
+        raise RuntimeError("point_gmail_at: googleapiclient.discovery.build is gone — update the shim")
+    if getattr(discovery.build, "_points_at_mock", False):
+        return
+
+    _real_build = discovery.build
+
+    def _build(*args, **kwargs):
+        kwargs.setdefault("static_discovery", True)
+        kwargs["client_options"] = ClientOptions(api_endpoint=base)  # gmail: rootUrl replaced
+        return _real_build(*args, **kwargs)
+
+    _build._points_at_mock = True
+    discovery.build = _build
 
 
 def patch_notion_at(base_url: str) -> None:
