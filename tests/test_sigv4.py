@@ -87,7 +87,7 @@ def test_acl_resolve_access_key(tmp_path):
 
 
 # ---------------------------------------------------------------- request-time fidelity
-# Task 13: real S3 rejects header-auth requests whose x-amz-date has drifted more than 15
+# real S3 rejects header-auth requests whose x-amz-date has drifted more than 15
 # minutes from the server clock (RequestTimeTooSkewed), and rejects presigned URLs once
 # X-Amz-Date + X-Amz-Expires has elapsed (AccessDenied). These tests build self-consistent
 # requests (signed via `expected_signature` with the real derived secret) so they're
