@@ -7,7 +7,7 @@ agent over a corpus **you** supply, entirely offline.
 
 ```bash
 pip install -e ".[examples,mirage]"
-python examples/using-mirage/slack.py       # or gmail.py, gdrive.py, notion.py, unified.py
+python examples/using-mirage/slack.py       # or gmail.py, gdrive.py, notion.py, s3.py, unified.py
 ```
 
 Each script spins up its own throwaway mock on a tiny in-code corpus, points a mirage
@@ -29,6 +29,7 @@ of driving it in-process (see [FUSE mode](#fuse-mode-fuse) below).
 | `gmail.py` | `GmailResource` | `/gmail` | `ls` labels → dates → messages; `cat` + `jq .subject` |
 | `gdrive.py` | `GoogleDriveResource` | `/gdrive` | `ls -F` folders → files; `cat` a native Google doc |
 | `notion.py` | `NotionResource` | `/notion` | `ls` `pages/` + `databases/`; `cat` a `page.json` / `database.json` |
+| `s3.py` | `S3Resource` | `/s3` | `ls` recursively → `cat` an object; `grep -r` across the bucket |
 | `unified.py` | all three | `/slack` `/gmail` `/gdrive` | one Workspace, one set of commands, three backends |
 
 The scripts navigate **top-down** (`ls` one level, `cat` one file) rather than walking a whole
@@ -58,6 +59,12 @@ with serve_or_connect(CORPUS) as mock:
 monkeypatch. mirage sends `Notion-Version: 2022-06-28`, which the mock's version-aware router
 serves (the legacy inline-`properties` / `databases.query` shape), so pages and databases both
 read correctly.
+
+**S3** is also plain config, no monkeypatch and no pin bump: `S3Config(endpoint_url=
+s3_base_url(mock.base_url), path_style=True, aws_access_key_id=ak, aws_secret_access_key=sk)`.
+`path_style=True` keeps the bucket in the path (`/s3/<bucket>/...`) rather than the hostname, and
+`s3_credentials(token)` derives the same access-key/secret pair the mock's SigV4 verifier expects,
+so mirage/aioboto3's signed requests resolve to that token's identity.
 
 **Google** has no such knob — its connectors read the API host from module constants that the
 base helpers return verbatim. So `_mirage.py` exposes `point_google_at(base_url)`, which rewrites

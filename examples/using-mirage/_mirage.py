@@ -40,6 +40,7 @@ if str(_SDK_DIR) not in sys.path:
 from _mockserver import (  # noqa: E402
     cli_token,
     google_oauth_user,
+    s3_credentials,
     serve_or_connect,
 )
 
@@ -58,8 +59,9 @@ try:  # best-effort; env-var path still applies if internals change
 except Exception:  # noqa: BLE001
     pass
 
-__all__ = ["point_google_at", "slack_base_url", "notion_base_url", "serve_or_connect",
-           "google_oauth_user", "cli_token", "lines", "run_mirage", "FUSE_HELP"]
+__all__ = ["point_google_at", "slack_base_url", "notion_base_url", "s3_base_url",
+           "serve_or_connect", "google_oauth_user", "s3_credentials", "cli_token", "lines",
+           "run_mirage", "FUSE_HELP"]
 
 
 def slack_base_url(base_url: str) -> str:
@@ -75,6 +77,12 @@ def notion_base_url(base_url: str) -> str:
     config field — no monkeypatch needed. mirage sends ``Notion-Version: 2022-06-28``, which the
     mock's version-aware router serves (the legacy inline-properties / ``databases.query`` shape)."""
     return f"{base_url.rstrip('/')}/notion/v1"
+
+
+def s3_base_url(base_url: str) -> str:
+    """The mock's S3 endpoint, for ``S3Config(endpoint_url=...)``. Path-style: the bucket is the
+    first path segment under ``/s3`` (S3Config(path_style=True) keeps it out of the hostname)."""
+    return f"{base_url.rstrip('/')}/s3"
 
 
 # Message the examples show when a --fuse run can't mount (missing mfusepy or OS FUSE driver),
