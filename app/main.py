@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import http
 import threading
+import warnings
 from contextlib import asynccontextmanager
 
 import yaml
@@ -95,6 +96,14 @@ async def lifespan(app: FastAPI):
     finally:
         conn.close()
 
+
+# Several routes intentionally serve more than one HTTP method for vendor fidelity — Slack methods
+# take GET+POST, Jira's search/jql on both /rest/api/2 and /3, S3 objects GET+HEAD. FastAPI derives
+# one operationId per route and reuses it for each method, so building /openapi.json emits a
+# "Duplicate Operation ID" UserWarning per such route. Those duplicates are expected and harmless:
+# MCP consumers fetch /_mock/openapi/{source}, which collapses them (see app.openapi.dedupe_operations).
+# Silence just that message so running the server / examples isn't noisy.
+warnings.filterwarnings("ignore", message="Duplicate Operation ID", category=UserWarning)
 
 app = FastAPI(title="EnterpriseRAG-Bench Mock Server", lifespan=lifespan)
 
