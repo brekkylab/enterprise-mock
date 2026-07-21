@@ -25,4 +25,5 @@ def test_github(live_server):
     docs = reader.load_data(
         state=GitHubRepositoryIssuesReader.IssueState.OPEN)
     assert docs, "expected at least one issue Document"
-    assert any("token-bucket" in d.text for d in docs)  # SAMPLE gh-issue-1 body
+    assert any("refill is off by one tick" in d.text for d in docs)  # SAMPLE gh-issue-1 body (open)
+    assert all("Corrects the refill tick" not in d.text for d in docs)  # gh-pr-1 (closed) excluded

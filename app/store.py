@@ -294,11 +294,14 @@ def _scope(sql: str, params: list, gcol: str, container: str | None, author_emai
 
 
 def list_documents(conn, source_type, container=None, visible_ids=None, limit=100,
-                   offset=0, author_email=None) -> list[sqlite3.Row]:
+                   offset=0, author_email=None, state=None) -> list[sqlite3.Row]:
     tbl = table(source_type)
     sql = f"SELECT * FROM {tbl} WHERE 1=1"
     params: list = []
     sql = _scope(sql, params, grouping_col(source_type), container, author_email)
+    if state is not None:
+        sql += " AND COALESCE(state, 'open') = ?"
+        params.append(state)
     clause, cparams = _acl_clause(tbl, visible_ids)
     sql += clause + " ORDER BY doc_id LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
@@ -356,11 +359,15 @@ def drive_folder_has_visible(conn, folder, visible_ids=None) -> bool:
     return conn.execute(sql, [folder, *params]).fetchone() is not None
 
 
-def count_documents(conn, source_type, container=None, visible_ids=None, author_email=None) -> int:
+def count_documents(conn, source_type, container=None, visible_ids=None, author_email=None,
+                    state=None) -> int:
     tbl = table(source_type)
     sql = f"SELECT COUNT(*) FROM {tbl} WHERE 1=1"
     params: list = []
     sql = _scope(sql, params, grouping_col(source_type), container, author_email)
+    if state is not None:
+        sql += " AND COALESCE(state, 'open') = ?"
+        params.append(state)
     clause, cparams = _acl_clause(tbl, visible_ids)
     sql += clause
     params += cparams

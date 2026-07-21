@@ -76,6 +76,25 @@ def test_count_documents(db):
     assert store.count_documents(db, "jira", container="no-such-project") == 0
 
 
+def test_list_documents_state_filter(db):
+    # gateway repo: gh-issue-1 is open (state NULL/"open"), gh-pr-1 is closed
+    open_ids = {r["doc_id"] for r in store.list_documents(db, "github", container="gateway",
+                                                          limit=100, state="open")}
+    closed_ids = {r["doc_id"] for r in store.list_documents(db, "github", container="gateway",
+                                                            limit=100, state="closed")}
+    assert "gh-issue-1" in open_ids and "gh-pr-1" not in open_ids
+    assert "gh-pr-1" in closed_ids and "gh-issue-1" not in closed_ids
+    # state=None (default) applies no filter -> both present
+    all_ids = {r["doc_id"] for r in store.list_documents(db, "github", container="gateway", limit=100)}
+    assert {"gh-issue-1", "gh-pr-1"} <= all_ids
+
+
+def test_count_documents_state_filter(db):
+    assert store.count_documents(db, "github", container="gateway", state="open") == 1
+    assert store.count_documents(db, "github", container="gateway", state="closed") == 1
+    assert store.count_documents(db, "github", container="gateway") >= 2
+
+
 def test_children(db):
     # jira-sub1 is a subtask of jira-sev2; cf-oncall is a child page of cf-handbook
     assert "jira-sub1" in {r["doc_id"] for r in store.children(db, "jira", "jira-sev2")}

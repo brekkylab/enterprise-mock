@@ -102,7 +102,7 @@ def crawl_github_repo(client, headers, org, repo):
     out, page = [], 1
     while True:
         r = client.get(f"/github/repos/{org}/{repo}/issues", headers=headers,
-                       params={"per_page": 5, "page": page})
+                       params={"per_page": 5, "page": page, "state": "all"})
         body = r.json()
         out += body
         if 'rel="next"' not in r.headers.get("Link", ""):
@@ -233,6 +233,36 @@ def test_github_body_roundtrip(client, admin_h, ro_conn, org):
     num = synth.github_number(doc["doc_id"])
     issue = client.get(f"/github/repos/{org}/{doc['repo']}/issues/{num}", headers=admin_h).json()
     assert issue["body"] == doc["content"] and issue["title"] == doc["title"]
+
+
+def test_github_issues_filtered_by_state(client, admin_h, org):
+    # gateway repo: gh-issue-1 is open, gh-pr-1 is a closed PR (both surface via /issues)
+    open_body = client.get(f"/github/repos/{org}/gateway/issues", headers=admin_h,
+                           params={"state": "open"}).json()
+    assert [i["title"] for i in open_body] == ["Rate limiter drops bursts under 50ms"]
+    closed_body = client.get(f"/github/repos/{org}/gateway/issues", headers=admin_h,
+                             params={"state": "closed"}).json()
+    assert [i["title"] for i in closed_body] == ["Fix token-bucket refill off-by-one"]
+    all_body = client.get(f"/github/repos/{org}/gateway/issues", headers=admin_h,
+                          params={"state": "all"}).json()
+    assert {i["title"] for i in all_body} == {"Rate limiter drops bursts under 50ms",
+                                              "Fix token-bucket refill off-by-one"}
+    # default (no state param) behaves like real GitHub: open only
+    default_body = client.get(f"/github/repos/{org}/gateway/issues", headers=admin_h).json()
+    assert default_body == open_body
+
+
+def test_github_pulls_filtered_by_state(client, admin_h, org):
+    # gateway repo's only PR (gh-pr-1) is closed
+    open_body = client.get(f"/github/repos/{org}/gateway/pulls", headers=admin_h,
+                           params={"state": "open"}).json()
+    assert open_body == []
+    closed_body = client.get(f"/github/repos/{org}/gateway/pulls", headers=admin_h,
+                             params={"state": "closed"}).json()
+    assert [p["title"] for p in closed_body] == ["Fix token-bucket refill off-by-one"]
+    all_body = client.get(f"/github/repos/{org}/gateway/pulls", headers=admin_h,
+                          params={"state": "all"}).json()
+    assert [p["title"] for p in all_body] == ["Fix token-bucket refill off-by-one"]
 
 
 def test_confluence_storage_roundtrip(client, admin_h, ro_conn):
