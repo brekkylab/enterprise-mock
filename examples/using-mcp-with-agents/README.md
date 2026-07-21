@@ -147,10 +147,10 @@ address`. To drive a remote deployment, tunnel it to loopback and point `--url` 
 `--url http://127.0.0.1:18000 --access-key … --secret-key …`. (boto3 and mirage have no such
 restriction — they take the hostname directly.)
 
-## How the OpenAPI→MCP bridge connects (`github.py`)
+## How the OpenAPI→MCP bridge connects (`github.py` / `slack.py` / `gmail.py` / `drive.py`)
 
-The remaining services have no vendor MCP server that accepts a base-URL override (see "Why not the
-other services" below). Instead of a vendor server, `github.py` runs the **generic bridge**
+These four sources have no vendor MCP server that accepts a base-URL override (see "Why these need
+the bridge" below). Instead of a vendor server, each launcher runs the **generic bridge**
 `_bridge.py` (Python, [FastMCP](https://gofastmcp.com)) as a stdio subprocess:
 
 - it fetches the mock's own **`/openapi.json`** — now a typed contract (the routers declare their
@@ -180,10 +180,11 @@ Atlassian authenticates with HTTP Basic (`--username` + the mock token as the pa
 one source with no bridge** — it is SigV4-signed (a static `Authorization` header can't sign each
 request); use the vendor `s3.py` example.
 
-## Why not the other services
+## Why these need the bridge (no base-URL-switchable vendor server)
 
-Some services' vendor MCP servers **cannot** be pointed at a self-hosted mock — that is exactly why
-the OpenAPI→MCP bridge above exists (it needs no vendor server at all):
+These services' vendor MCP servers **cannot** be pointed at a self-hosted mock — that is exactly why
+the OpenAPI→MCP bridge above exists (it needs no vendor server at all); each is now driven through
+it:
 
 - **GitHub** — the official `github/github-mcp-server` has `GITHUB_HOST`, but it strips the
   port (so needs port 80), forces GitHub-Enterprise paths (`/api/v3`, `/api/graphql`), and
