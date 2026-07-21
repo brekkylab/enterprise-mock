@@ -32,7 +32,7 @@ SOURCE_PREFIXES: dict[str, list[str]] = {
     "github": ["/github"],
     "slack": ["/slack/api"],
     "gmail": ["/gmail"],
-    "drive": ["/drive"],
+    "gdrive": ["/drive"],
     "notion": ["/notion/v1"],
     "atlassian": ["/atlassian", "/wiki"],
 }

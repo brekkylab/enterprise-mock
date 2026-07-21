@@ -37,10 +37,10 @@ _BRIDGE = str(Path(__file__).with_name("_openapi_bridge.py"))
 
 
 def build_params(base_url: str, token: str) -> StdioServerParameters:
-    """Run `_openapi_bridge.py --source drive` as a stdio MCP server pointed at the mock."""
+    """Run `_openapi_bridge.py --source gdrive` as a stdio MCP server pointed at the mock."""
     return StdioServerParameters(
         command=sys.executable,
-        args=[_BRIDGE, "--source", "drive", "--base-url", base_url.rstrip("/"), "--token", token])
+        args=[_BRIDGE, "--source", "gdrive", "--base-url", base_url.rstrip("/"), "--token", token])
 
 
 def _parse_args() -> argparse.Namespace:

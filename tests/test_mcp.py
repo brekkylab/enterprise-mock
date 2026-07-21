@@ -270,9 +270,9 @@ def test_mcp_gmail_bridge_acl_enforced(live_server):
     assert not reads(user["token"]), f"{email} should be blocked from the message via the bridge"
 
 
-# ------------------------------------------------------ Drive (generic OpenAPI→MCP bridge)
+# ------------------------------------------------------ Google Drive (generic OpenAPI→MCP bridge)
 
-def test_mcp_drive_bridge_acl_enforced(live_server):
+def test_mcp_gdrive_bridge_acl_enforced(live_server):
     """A Drive file the admin can read via the bridge's files.get tool is 404 for a scoped user."""
     pytest.importorskip("fastmcp")
     base, settings = live_server
@@ -282,7 +282,7 @@ def test_mcp_drive_bridge_acl_enforced(live_server):
     file_id = row["doc_id"]
 
     def reads(token):
-        return _bridge_call(base, "drive", token,
+        return _bridge_call(base, "gdrive", token,
                             tool_pred=lambda n: n.startswith("drive_files_get"),
                             args={"file_id": file_id},
                             ok_pred=lambda t: '"name"' in t and '"mimeType"' in t)
