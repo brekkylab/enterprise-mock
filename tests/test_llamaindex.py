@@ -13,3 +13,16 @@ import pytest
 def _base_token(live_server):
     base, settings = live_server
     return base, settings.admin_token
+
+
+def test_github(live_server):
+    pytest.importorskip("llama_index.readers.github")
+    from llama_index.readers.github import GitHubRepositoryIssuesReader, GitHubIssuesClient
+
+    base, admin = _base_token(live_server)
+    client = GitHubIssuesClient(github_token=admin, base_url=f"{base}/github", verbose=False)
+    reader = GitHubRepositoryIssuesReader(client, owner="acme", repo="gateway", verbose=False)
+    docs = reader.load_data(
+        state=GitHubRepositoryIssuesReader.IssueState.OPEN)
+    assert docs, "expected at least one issue Document"
+    assert any("token-bucket" in d.text for d in docs)  # SAMPLE gh-issue-1 body
