@@ -10,6 +10,7 @@ import re
 from html import escape
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, ConfigDict
 
 from app import auth, store, synth
 from app.acl import Caller
@@ -17,6 +18,61 @@ from app.config import get_settings
 from app.pagination import confluence_next_link, decode_cursor, next_page_token
 
 router = APIRouter(prefix="/atlassian", tags=["atlassian"])
+
+
+# --- OpenAPI enrichment (issue #4 bridge) --------------------------------------------------
+# jira_search reads params query-or-body (GET+POST) so they're documented with openapi_extra (no
+# signature change); confluence params are query-only. Response models use extra="allow" to
+# preserve every field. Error paths raise HTTPException (Atlassian-shaped), not filtered here.
+# Secondary metadata routes (roles / linktypes / labels / restrictions) are left untyped — the
+# bridge still exposes them as tools; they aren't retrieval surfaces.
+
+class _ALoose(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class JiraSearchResult(_ALoose):
+    issues: list[dict] = []
+    isLast: bool = True
+
+
+class JiraIssue(_ALoose):
+    id: str
+    key: str
+
+
+class JiraComments(_ALoose):
+    comments: list[dict] = []
+    total: int = 0
+
+
+class JiraField(_ALoose):
+    id: str
+    name: str
+
+
+class ConfluenceResults(_ALoose):
+    results: list[dict] = []
+
+
+class ConfluencePage(_ALoose):
+    pass
+
+
+def _aqp(name: str, typ: str = "string", required: bool = False) -> dict:
+    return {"name": name, "in": "query", "required": required, "schema": {"type": typ}}
+
+
+_X_JIRA_SEARCH = {
+    "parameters": [_aqp("jql"), _aqp("maxResults", "integer"), _aqp("nextPageToken")],
+    "requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {
+        "jql": {"type": "string"}, "maxResults": {"type": "integer"},
+        "nextPageToken": {"type": "string"}}}}}},
+}
+_P_EXPAND = {"parameters": [_aqp("expand")]}
+_P_CQL = {"parameters": [_aqp("cql", required=True), _aqp("limit", "integer"), _aqp("start", "integer")]}
+_P_CONTENT = {"parameters": [_aqp("expand"), _aqp("spaceKey"),
+                             _aqp("limit", "integer"), _aqp("start", "integer")]}
 
 
 def _require(request: Request) -> Caller:
@@ -83,8 +139,10 @@ async def jira_project_role(key: str, role_id: int, request: Request):
     return {"id": role_id, "name": "Users", "actors": actors}
 
 
-@router.api_route("/rest/api/2/search/jql", methods=["GET", "POST"])  # atlassian-python-api uses v2
-@router.api_route("/rest/api/3/search/jql", methods=["GET", "POST"])
+@router.api_route("/rest/api/2/search/jql", methods=["GET", "POST"],  # atlassian-python-api uses v2
+                  response_model=JiraSearchResult, openapi_extra=_X_JIRA_SEARCH)
+@router.api_route("/rest/api/3/search/jql", methods=["GET", "POST"],
+                  response_model=JiraSearchResult, openapi_extra=_X_JIRA_SEARCH)
 async def jira_search(request: Request):
     conn = auth.conn(request)
     caller = _require(request)
@@ -112,8 +170,9 @@ async def jira_search(request: Request):
     return {"issues": issues, "isLast": token is None, **({"nextPageToken": token} if token else {})}
 
 
-@router.get("/rest/api/2/issue/{key}")  # atlassian-python-api uses v2 for issue fetch
-@router.get("/rest/api/3/issue/{key}")
+@router.get("/rest/api/2/issue/{key}",  # atlassian-python-api uses v2 for issue fetch
+            response_model=JiraIssue, openapi_extra=_P_EXPAND)
+@router.get("/rest/api/3/issue/{key}", response_model=JiraIssue, openapi_extra=_P_EXPAND)
 async def jira_get_issue(key: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
@@ -127,8 +186,8 @@ async def jira_get_issue(key: str, request: Request):
     return _jira_issue(conn, request, row, expand=request.query_params.get("expand", ""))
 
 
-@router.get("/rest/api/2/issue/{key}/comment")
-@router.get("/rest/api/3/issue/{key}/comment")
+@router.get("/rest/api/2/issue/{key}/comment", response_model=JiraComments)
+@router.get("/rest/api/3/issue/{key}/comment", response_model=JiraComments)
 async def jira_issue_comments(key: str, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
@@ -188,8 +247,8 @@ _JIRA_FIELDS = [
 ]
 
 
-@router.get("/rest/api/2/field")  # atlassian-python-api / mcp-atlassian field discovery
-@router.get("/rest/api/3/field")
+@router.get("/rest/api/2/field", response_model=list[JiraField])  # atlassian-python-api / mcp-atlassian field discovery
+@router.get("/rest/api/3/field", response_model=list[JiraField])
 async def jira_fields(request: Request):
     _require(request)
     return _JIRA_FIELDS
@@ -355,7 +414,7 @@ def _space_container_for_key(conn, space_key: str) -> str | None:
     return None
 
 
-@router.get("/wiki/rest/api/space")
+@router.get("/wiki/rest/api/space", response_model=ConfluenceResults)
 async def confluence_spaces(request: Request):
     conn = auth.conn(request)
     _require(request)
@@ -386,7 +445,7 @@ async def confluence_space_permission(key: str, request: Request):
     return {"results": perms}
 
 
-@router.get("/wiki/rest/api/space/{key}")
+@router.get("/wiki/rest/api/space/{key}", response_model=ConfluencePage, openapi_extra=_P_EXPAND)
 async def confluence_space_get(key: str, request: Request):
     """Single-space fetch (atlassian-python-api's ``get_space`` / mcp-atlassian result enrichment).
     404s (Atlassian-shaped) for an unknown key."""
@@ -402,7 +461,7 @@ async def confluence_space_get(key: str, request: Request):
     return space
 
 
-@router.get("/wiki/rest/api/search")
+@router.get("/wiki/rest/api/search", response_model=ConfluenceResults, openapi_extra=_P_CQL)
 async def confluence_cql_search(request: Request):
     """CQL search used by Confluence clients (e.g. mcp-atlassian). We parse the
     `~ "term"` operand and do a keyword search over the ACL-visible corpus."""
@@ -456,7 +515,7 @@ async def confluence_cql_search(request: Request):
             "totalSize": total, "cqlQuery": cql, "searchDuration": 5, "_links": links}
 
 
-@router.get("/wiki/rest/api/content")
+@router.get("/wiki/rest/api/content", response_model=ConfluenceResults, openapi_extra=_P_CONTENT)
 async def confluence_content_list(request: Request):
     conn = auth.conn(request)
     caller = _require(request)
@@ -481,7 +540,7 @@ async def confluence_content_list(request: Request):
     return {"results": results, "start": start, "limit": limit, "size": len(rows), "_links": links}
 
 
-@router.get("/wiki/rest/api/content/{content_id}")
+@router.get("/wiki/rest/api/content/{content_id}", response_model=ConfluencePage, openapi_extra=_P_EXPAND)
 async def confluence_content_get(content_id: int, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
@@ -499,7 +558,7 @@ def _confluence_doc_id(request: Request, content_id: int) -> str | None:
     return request.app.state.index["confluence"].get(content_id)
 
 
-@router.get("/wiki/rest/api/content/{content_id}/child/page")
+@router.get("/wiki/rest/api/content/{content_id}/child/page", response_model=ConfluenceResults, openapi_extra=_P_EXPAND)
 async def confluence_child_pages(content_id: int, request: Request):
     conn = auth.conn(request)
     caller = _require(request)

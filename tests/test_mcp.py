@@ -314,3 +314,29 @@ def test_mcp_notion_bridge_acl_enforced(live_server):
 
     assert reads(settings.admin_token), "admin should read the page through the bridge"
     assert not reads(user["token"]), f"{email} should be blocked from the page via the bridge"
+
+
+# ------------------------------------------------------ Atlassian (generic OpenAPI→MCP bridge)
+# Atlassian also has a vendor-server example (test_mcp_atlassian_acl_enforced, Docker); this
+# proves the same ACL additively through the generic bridge (basic auth), with no vendor server.
+
+def test_mcp_atlassian_bridge_acl_enforced(live_server):
+    pytest.importorskip("fastmcp")
+    base, settings = live_server
+    user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
+    row, email = _restricted_doc(settings, user["token"], "jira")
+    assert row is not None, f"no Jira issue is ACL-restricted from {email} in the sample corpus"
+    key = synth.jira_key(row["doc_id"], synth.jira_project_key(row["project"]))
+
+    def reads(token):
+        try:
+            return asyncio.run(_call(
+                _bridge_params("atlassian", base, token, username="svc@example.com"),
+                tool_pred=lambda n: n.startswith("jira_get_issue"),
+                args={"key": key},
+                ok_pred=lambda t: '"key"' in t and '"fields"' in t))
+        except Exception:  # noqa: BLE001
+            return False
+
+    assert reads(settings.admin_token), "admin should read the issue through the bridge (basic auth)"
+    assert not reads(user["token"]), f"{email} should be blocked from the issue via the bridge"

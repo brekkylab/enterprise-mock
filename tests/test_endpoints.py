@@ -813,3 +813,38 @@ def test_notion_responses_unchanged_by_enrichment(client, admin_h):
         default = client.get(f"/notion/v1/databases/{did}",
                              headers={**admin_h, "Notion-Version": "2025-09-03"}).json()
         assert "properties" in legacy and "data_sources" in default
+
+
+# --- OpenAPI enrichment: atlassian (jira + confluence) ------------------------------------
+
+def test_atlassian_jira_search_documents_params(client):
+    op = client.get("/openapi.json").json()["paths"]["/atlassian/rest/api/3/search/jql"]["get"]
+    names = {p["name"] for p in op.get("parameters", [])}
+    assert {"jql", "maxResults", "nextPageToken"} <= names
+
+
+def test_atlassian_confluence_search_documents_cql(client):
+    op = client.get("/openapi.json").json()["paths"]["/atlassian/wiki/rest/api/search"]["get"]
+    assert "cql" in {p["name"] for p in op.get("parameters", [])}
+
+
+def test_atlassian_issue_has_typed_response_schema(client):
+    op = client.get("/openapi.json").json()["paths"]["/atlassian/rest/api/3/issue/{key}"]["get"]
+    assert op["responses"]["200"]["content"]["application/json"]["schema"] != {}
+
+
+def test_atlassian_responses_unchanged_by_enrichment(client, admin_h):
+    search = client.get("/atlassian/rest/api/3/search/jql", headers=admin_h).json()
+    assert "issues" in search and "isLast" in search and search["issues"]
+    key = search["issues"][0]["key"]
+    issue = client.get(f"/atlassian/rest/api/3/issue/{key}", headers=admin_h).json()
+    for k in ("id", "key", "self", "fields"):
+        assert k in issue, f"jira issue missing {k} (fidelity regression)"
+    assert "summary" in issue["fields"] and "status" in issue["fields"]
+    cl = client.get("/atlassian/wiki/rest/api/content", params={"expand": "body.storage"},
+                    headers=admin_h).json()
+    assert "results" in cl and cl["results"]
+    cid = cl["results"][0]["id"]
+    page = client.get(f"/atlassian/wiki/rest/api/content/{cid}", params={"expand": "body.storage"},
+                      headers=admin_h).json()
+    assert "body" in page and "storage" in page["body"]  # expand survives
