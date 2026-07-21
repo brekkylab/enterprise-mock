@@ -14,6 +14,17 @@ service (like the other `examples/` dirs) — run the one you want:
   (uvx/Python) — it shells the AWS CLI, whose boto3 client honors a first-class
   `AWS_ENDPOINT_URL` override and SigV4-signs every call; a broad AWS-CLI wrapper, so the agent
   runs `aws s3api …` commands.
+- **`github.py`** via the **generic OpenAPI→MCP bridge** (`_openapi_bridge.py`, Python/FastMCP) — no vendor
+  MCP server exists that can be pointed at a self-hosted mock, so instead the bridge turns the
+  mock's own typed `/openapi.json` into MCP tools. See "How the OpenAPI→MCP bridge connects" below.
+  This unlocks the sources with no base-URL-switchable vendor server; more sources
+  (Gmail/Drive) are being added the same way.
+- **`slack.py`** via the same **OpenAPI→MCP bridge** — no maintained Slack MCP server accepts a
+  base-URL override (they hard-wire `slack.com`), so the bridge serves the mock's Slack Web API
+  (`/slack/api/*`) as tools instead.
+- **`gmail.py`** via the same **OpenAPI→MCP bridge** — Gmail MCP servers hard-wire `googleapis.com`
+  and need real Google OAuth, so the bridge serves the mock's Gmail API (`/gmail/*`) as tools.
+- **`gdrive.py`** via the same **OpenAPI→MCP bridge** — likewise for Google Drive (`/drive/*`).
 
 Each service file builds its own MCP `StdioServerParameters` and calls `run_agent(...)`. Two shared
 helpers:
@@ -45,12 +56,16 @@ python -m pytest tests/test_mcp.py
 #   Atlassian: admin reads an ACL-restricted Jira issue, a user token is blocked
 #   Notion:    admin reads an ACL-restricted page, an outsider is blocked
 #   S3:        admin lists bucket objects through a signed AWS CLI call
+#   GitHub:    admin reads an ACL-restricted issue via the bridge, a user token is blocked
+#   Slack:     admin search surfaces a restricted-channel message via the bridge, a user can't
 
 # drive it with an LLM agent (needs an API key). --agent defaults to anthropic; add --agent openai.
 ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/atlassian.py
 ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/notion.py
 OPENAI_API_KEY=…    python examples/using-mcp-with-agents/notion.py --agent openai
 ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/s3.py
+ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/github.py   # via the OpenAPI→MCP bridge
+ANTHROPIC_API_KEY=… python examples/using-mcp-with-agents/slack.py    # via the OpenAPI→MCP bridge
 ```
 
 **Auth is per-service.** Retrieval is ACL-scoped by the identity you pass:
@@ -132,15 +147,50 @@ address`. To drive a remote deployment, tunnel it to loopback and point `--url` 
 `--url http://127.0.0.1:18000 --access-key … --secret-key …`. (boto3 and mirage have no such
 restriction — they take the hostname directly.)
 
-## Why not the other services
+## How the OpenAPI→MCP bridge connects (`github.py` / `slack.py` / `gmail.py` / `gdrive.py`)
 
-The remaining services' MCP servers **cannot** be pointed at a self-hosted mock, so no example is
-provided — using them would require writing a base-URL-switchable MCP server against the mock's
-endpoints (not included here):
+These four sources have no vendor MCP server that accepts a base-URL override (see "Why these need
+the bridge" below). Instead of a vendor server, each launcher runs the **generic bridge**
+`_openapi_bridge.py` (Python, [FastMCP](https://gofastmcp.com)) as a stdio subprocess. The bridge is
+deliberately thin — the mock does the spec work:
+
+- the mock serves an **MCP-ready spec per source** at **`GET /_mock/openapi/<source>`** — its own
+  typed `/openapi.json` (the routers declare query params and response models) sliced to that
+  source and with the GET/POST and Jira v2/v3 fidelity aliases collapsed to one operation each
+  (the raw spec carries ~14 duplicate operationIds, which an MCP tool set can't have). This lives
+  in `app/openapi.py`, so there is nothing to clean up client-side;
+- the bridge just fetches that spec and serves it over stdio via `FastMCP.from_openapi()` on an
+  `httpx.AsyncClient` whose base URL is the mock and whose **`Authorization`** header is the mock
+  token — so the mock resolves the token to a user and **enforces that user's ACL** on every call.
+
+stdio (not streamable-HTTP): FastMCP's HTTP mode has a known bug forwarding the client's
+`Authorization` header downstream. Auth: `--username` present → HTTP Basic (Atlassian); otherwise
+`Bearer` (`--token`, default admin; per-user from `GET /_mock/users`). Adding a source is one entry
+in `app/openapi.py`'s `SOURCE_PREFIXES` plus a thin launcher.
+
+**Notion and Atlassian** already have vendor-server launchers above, but they also work through the
+generic bridge (no vendor server) — run `_openapi_bridge.py` directly:
+
+```bash
+python examples/using-mcp-with-agents/_openapi_bridge.py --source notion    --base-url <mock> --token <t>
+python examples/using-mcp-with-agents/_openapi_bridge.py --source atlassian --base-url <mock> --token <t> --username svc@example.com
+```
+
+Atlassian authenticates with HTTP Basic (`--username` + the mock token as the password), and its
+`SOURCE_PREFIXES` entry covers both the `/atlassian` (Jira) and `/wiki` (Confluence) path roots.
+**S3 is the one source with no bridge** — it is SigV4-signed (a static `Authorization` header can't
+sign each request), so it is absent from `/_mock/openapi/*`; use the vendor `s3.py` example.
+
+## Why these need the bridge (no base-URL-switchable vendor server)
+
+These services' vendor MCP servers **cannot** be pointed at a self-hosted mock — that is exactly why
+the OpenAPI→MCP bridge above exists (it needs no vendor server at all); each is now driven through
+it:
 
 - **GitHub** — the official `github/github-mcp-server` has `GITHUB_HOST`, but it strips the
   port (so needs port 80), forces GitHub-Enterprise paths (`/api/v3`, `/api/graphql`), and
-  relies on GraphQL the mock doesn't implement.
+  relies on GraphQL the mock doesn't implement. **→ driven via the bridge (`github.py`) instead.**
 - **Slack** — no API-base override in any maintained server (hard-wired to `slack.com`).
+  **→ driven via the bridge (`slack.py`) instead.**
 - **Gmail / Google Drive** — official and community servers hard-wire `googleapis.com` and
-  require real Google OAuth; no endpoint override.
+  require real Google OAuth; no endpoint override. **→ driven via the bridge (`gmail.py`, `gdrive.py`).**

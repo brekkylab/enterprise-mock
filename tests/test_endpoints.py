@@ -756,3 +756,229 @@ def test_confluence_single_space_get(client, admin_h):
     # unknown space -> clean atlassian-shaped 404
     r2 = client.get("/atlassian/wiki/rest/api/space/NOSUCH", headers=admin_h)
     assert r2.status_code == 404 and "message" in r2.json()
+
+
+# --- OpenAPI enrichment: github query params + response fidelity (issue #4 bridge) --------
+
+def test_github_search_issues_documents_q_param(client):
+    op = client.get("/openapi.json").json()["paths"]["/github/search/issues"]["get"]
+    names = {p["name"] for p in op.get("parameters", [])}
+    assert {"q", "page", "per_page"} <= names
+
+
+def test_github_list_issues_documents_state_param(client):
+    op = client.get("/openapi.json").json()["paths"]["/github/repos/{owner}/{repo}/issues"]["get"]
+    params = {p["name"]: p for p in op.get("parameters", [])}
+    assert "state" in params and {"page", "per_page"} <= set(params)
+    assert params["state"]["schema"].get("default") == "open"
+
+
+def test_github_search_still_filters_by_q(client, admin_h):
+    body = client.get("/github/search/issues", params={"q": ""}, headers=admin_h).json()
+    assert "items" in body and "total_count" in body
+
+
+def test_github_responses_unchanged_by_enrichment(client, admin_h):
+    # Fidelity guard: the rich issue field set must survive query-param + response_model enrichment.
+    body = client.get("/github/search/issues", params={"q": ""}, headers=admin_h).json()
+    assert body["items"], "SAMPLE should have github issues"
+    item = body["items"][0]
+    for key in ("id", "node_id", "number", "title", "body", "state", "user", "labels",
+                "assignees", "milestone", "comments", "reactions", "author_association",
+                "created_at", "updated_at", "html_url", "url", "repository_url"):
+        assert key in item, f"missing {key} (fidelity regression)"
+
+
+def test_github_issue_search_has_typed_response_schema(client):
+    op = client.get("/openapi.json").json()["paths"]["/github/search/issues"]["get"]
+    schema = op["responses"]["200"]["content"]["application/json"]["schema"]
+    assert schema != {}
+    assert "$ref" in schema or schema.get("type") in ("object", "array")
+
+
+def test_github_operation_ids_unique(client):
+    spec = client.get("/openapi.json").json()
+    ids = [op["operationId"]
+           for p, item in spec["paths"].items() if p.startswith("/github")
+           for m, op in item.items() if isinstance(op, dict) and "operationId" in op]
+    assert len(ids) == len(set(ids))
+
+
+# --- OpenAPI enrichment: slack (query-or-form params via openapi_extra) -------------------
+
+def test_slack_search_documents_query_param(client):
+    op = client.get("/openapi.json").json()["paths"]["/slack/api/search.messages"]["get"]
+    names = {p["name"] for p in op.get("parameters", [])}
+    assert {"query", "count", "page"} <= names
+
+
+def test_slack_history_documents_channel_param(client):
+    op = client.get("/openapi.json").json()["paths"]["/slack/api/conversations.history"]["get"]
+    names = {p["name"] for p in op.get("parameters", [])}
+    assert {"channel", "limit", "cursor"} <= names
+
+
+def test_slack_responses_unchanged_by_enrichment(client, admin_h):
+    lst = client.get("/slack/api/conversations.list", headers=admin_h).json()
+    assert lst["ok"] and "channels" in lst and "response_metadata" in lst
+    if lst["channels"]:
+        ch = lst["channels"][0]
+        for k in ("id", "name", "is_private", "is_member", "num_members", "topic",
+                  "purpose", "created", "creator"):
+            assert k in ch, f"slack channel missing {k} (fidelity regression)"
+    srch = client.get("/slack/api/search.messages", params={"query": "gateway"}, headers=admin_h).json()
+    assert srch["ok"] and "messages" in srch and "matches" in srch["messages"]
+
+
+# --- OpenAPI enrichment: gmail ------------------------------------------------------------
+
+def test_gmail_messages_documents_q_param(client):
+    op = client.get("/openapi.json").json()["paths"]["/gmail/v1/users/{user_id}/messages"]["get"]
+    names = {p["name"] for p in op.get("parameters", [])}
+    assert {"q", "maxResults", "pageToken"} <= names
+    assert "user_id" in names  # path param preserved
+
+
+def test_gmail_messages_has_typed_response_schema(client):
+    op = client.get("/openapi.json").json()["paths"]["/gmail/v1/users/{user_id}/messages"]["get"]
+    schema = op["responses"]["200"]["content"]["application/json"]["schema"]
+    assert schema != {}
+
+
+def test_gmail_responses_unchanged_by_enrichment(client, admin_h):
+    lst = client.get("/gmail/v1/users/me/messages", headers=admin_h).json()
+    assert "messages" in lst and "resultSizeEstimate" in lst
+    if lst["messages"]:
+        mid = lst["messages"][0]["id"]
+        msg = client.get(f"/gmail/v1/users/me/messages/{mid}", params={"format": "full"},
+                         headers=admin_h).json()
+        for k in ("id", "threadId", "labelIds", "snippet", "internalDate", "sizeEstimate", "payload"):
+            assert k in msg, f"gmail message missing {k} (fidelity regression)"
+
+
+# --- OpenAPI enrichment: drive ------------------------------------------------------------
+
+def test_drive_files_documents_q_param(client):
+    op = client.get("/openapi.json").json()["paths"]["/drive/v3/files"]["get"]
+    names = {p["name"] for p in op.get("parameters", [])}
+    assert {"q", "pageSize", "pageToken", "fields"} <= names
+
+
+def test_drive_files_has_typed_response_schema(client):
+    op = client.get("/openapi.json").json()["paths"]["/drive/v3/files"]["get"]
+    schema = op["responses"]["200"]["content"]["application/json"]["schema"]
+    assert schema != {}
+
+
+def _drive_find(client, admin_h, name_substr):
+    j = client.get("/drive/v3/files", params={"q": f"name contains '{name_substr}'"},
+                   headers=admin_h).json()
+    return j["files"][0] if j.get("files") else None
+
+
+def test_drive_responses_unchanged_by_enrichment(client, admin_h):
+    lst = client.get("/drive/v3/files", headers=admin_h).json()
+    assert lst["kind"] == "drive#fileList" and "files" in lst
+    doc = _drive_find(client, admin_h, "Brand")
+    assert doc is not None
+    full = client.get(f"/drive/v3/files/{doc['id']}", headers=admin_h).json()
+    for k in ("kind", "id", "name", "mimeType", "createdTime", "modifiedTime", "owners",
+              "webViewLink", "capabilities"):
+        assert k in full, f"drive file missing {k} (fidelity regression)"
+
+
+def test_drive_export_and_media_stay_non_json(client, admin_h):
+    # A native doc exports as PlainTextResponse; response_model must NOT be attached to these.
+    doc = _drive_find(client, admin_h, "Brand")
+    exp = client.get(f"/drive/v3/files/{doc['id']}/export",
+                     params={"mimeType": "text/plain"}, headers=admin_h)
+    assert exp.status_code == 200 and "application/json" not in exp.headers["content-type"]
+    # A binary (pdf) downloads raw via alt=media.
+    pdf = _drive_find(client, admin_h, "Whitepaper")
+    med = client.get(f"/drive/v3/files/{pdf['id']}", params={"alt": "media"}, headers=admin_h)
+    assert med.status_code == 200 and "application/json" not in med.headers["content-type"]
+
+
+# --- OpenAPI enrichment: notion -----------------------------------------------------------
+
+def test_notion_search_documents_body_param(client):
+    op = client.get("/openapi.json").json()["paths"]["/notion/v1/search"]["post"]
+    props = op["requestBody"]["content"]["application/json"]["schema"]["properties"]
+    assert "query" in props and "filter" in props
+
+
+def test_notion_users_documents_pagination(client):
+    op = client.get("/openapi.json").json()["paths"]["/notion/v1/users"]["get"]
+    names = {p["name"] for p in op.get("parameters", [])}
+    assert {"start_cursor", "page_size"} <= names
+
+
+def test_notion_page_has_typed_response_schema(client):
+    op = client.get("/openapi.json").json()["paths"]["/notion/v1/pages/{page_id}"]["get"]
+    assert op["responses"]["200"]["content"]["application/json"]["schema"] != {}
+
+
+def test_notion_responses_unchanged_by_enrichment(client, admin_h):
+    res = client.post("/notion/v1/search", json={}, headers=admin_h).json()
+    assert res["object"] == "list" and "results" in res
+    pages = [r for r in res["results"] if r.get("object") == "page"]
+    assert pages, "expected notion pages in search"
+    page = client.get(f"/notion/v1/pages/{pages[0]['id']}", headers=admin_h).json()
+    for k in ("object", "id", "created_time", "last_edited_time", "properties", "parent", "url"):
+        assert k in page, f"notion page missing {k} (fidelity regression)"
+    dbs = [r for r in res["results"] if r.get("object") == "database"]
+    if dbs:  # version-dependent database shape must survive both header values
+        did = dbs[0]["id"]
+        legacy = client.get(f"/notion/v1/databases/{did}",
+                            headers={**admin_h, "Notion-Version": "2022-06-28"}).json()
+        default = client.get(f"/notion/v1/databases/{did}",
+                             headers={**admin_h, "Notion-Version": "2025-09-03"}).json()
+        assert "properties" in legacy and "data_sources" in default
+
+
+# --- OpenAPI enrichment: atlassian (jira + confluence) ------------------------------------
+
+def test_atlassian_jira_search_documents_params(client):
+    op = client.get("/openapi.json").json()["paths"]["/atlassian/rest/api/3/search/jql"]["get"]
+    names = {p["name"] for p in op.get("parameters", [])}
+    assert {"jql", "maxResults", "nextPageToken"} <= names
+
+
+def test_atlassian_confluence_search_documents_cql(client):
+    op = client.get("/openapi.json").json()["paths"]["/atlassian/wiki/rest/api/search"]["get"]
+    assert "cql" in {p["name"] for p in op.get("parameters", [])}
+
+
+def test_atlassian_issue_has_typed_response_schema(client):
+    op = client.get("/openapi.json").json()["paths"]["/atlassian/rest/api/3/issue/{key}"]["get"]
+    assert op["responses"]["200"]["content"]["application/json"]["schema"] != {}
+
+
+def test_atlassian_responses_unchanged_by_enrichment(client, admin_h):
+    search = client.get("/atlassian/rest/api/3/search/jql", headers=admin_h).json()
+    assert "issues" in search and "isLast" in search and search["issues"]
+    key = search["issues"][0]["key"]
+    issue = client.get(f"/atlassian/rest/api/3/issue/{key}", headers=admin_h).json()
+    for k in ("id", "key", "self", "fields"):
+        assert k in issue, f"jira issue missing {k} (fidelity regression)"
+    assert "summary" in issue["fields"] and "status" in issue["fields"]
+    cl = client.get("/atlassian/wiki/rest/api/content", params={"expand": "body.storage"},
+                    headers=admin_h).json()
+    assert "results" in cl and cl["results"]
+    cid = cl["results"][0]["id"]
+    page = client.get(f"/atlassian/wiki/rest/api/content/{cid}", params={"expand": "body.storage"},
+                      headers=admin_h).json()
+    assert "body" in page and "storage" in page["body"]  # expand survives
+
+
+# --- /_mock/openapi/{source}: the MCP-ready spec endpoint (issue #4 bridge) ---------------
+
+def test_mock_openapi_spec_endpoint(client):
+    gh = client.get("/_mock/openapi/github")
+    assert gh.status_code == 200
+    ids = [op["operationId"]
+           for item in gh.json()["paths"].values()
+           for m, op in item.items() if isinstance(op, dict) and "operationId" in op]
+    assert ids and len(ids) == len(set(ids)), "served spec must have unique operationIds (bridge-ready)"
+    assert client.get("/_mock/openapi/s3").status_code == 404  # SigV4 — intentionally no bridge
+    assert client.get("/_mock/openapi/nope").status_code == 404
