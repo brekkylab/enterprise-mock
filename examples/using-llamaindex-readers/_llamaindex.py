@@ -59,8 +59,10 @@ def github_base_url(base_url: str) -> str:
 
 
 def atlassian_base_url(base_url: str) -> str:
-    """Atlassian base for Jira `PATauth.server_url` / `ConfluenceReader(base_url=...)`; the
-    respective client appends `/rest/api/<ver>` (Jira) or `/wiki/rest/api` (Confluence)."""
+    """Atlassian base for Jira `PATauth.server_url` / `ConfluenceReader(base_url=...)`. The
+    Jira client appends `/rest/api/<ver>` itself. atlassian-python-api 4.0.7 never appends
+    `/wiki` regardless of `cloud`, so the Confluence example spells `/wiki` out explicitly on
+    top of this base (with `cloud=False`) rather than relying on the client to add it."""
     return f"{base_url.rstrip('/')}/atlassian"
 
 

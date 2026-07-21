@@ -357,8 +357,13 @@ def _export_view(content: str) -> str:
 
 
 def _space_container_for_key(conn, space_key: str) -> str | None:
+    """Resolve a Confluence ``spaceKey`` to its backing container name. The mock models a space
+    by its corpus name, so both the synthesized key (``synth.confluence_space_key(name)``, the
+    hash-suffixed value ``/space`` advertises) and the literal container name (e.g. ``"handbook"``,
+    a legitimate natural key) resolve. Anything else is unresolvable -> ``None`` (never a silent
+    fall-through to "no filter": callers must treat ``None`` as "0 results", not "everything")."""
     for r in store.list_containers(conn, "confluence"):
-        if synth.confluence_space_key(r["name"]) == space_key:
+        if space_key == synth.confluence_space_key(r["name"]) or space_key == r["name"]:
             return r["name"]
     return None
 
@@ -421,9 +426,15 @@ async def confluence_cql_search(request: Request):
     m = re.search(r'(?:text|title)\s*~\s*"?([^"~]+)"?', cql) or re.search(r'~\s*"?([^"~]+)"?', cql)
     term = m.group(1).strip() if m else ""
     # honor the common structured CQL clauses: space / type / label
-    ms = re.search(r'space\s*=\s*"?([A-Za-z0-9_]+)"?', cql)
+    ms = re.search(r'space(?:\.key)?\s*=\s*"?([A-Za-z0-9_-]+)"?', cql)
     space_key = ms.group(1) if ms else None
-    container = _space_container_for_key(conn, space_key) if space_key else None
+    space_unresolvable = False
+    container = None
+    if space_key:
+        container = _space_container_for_key(conn, space_key)
+        if container is None:
+            # unresolvable space=/space.key= clause: strict 0 matches, not the unfiltered corpus.
+            space_unresolvable = True
     mt = re.search(r'type\s*=\s*"?(page|blogpost|comment)"?', cql)
     want_type = mt.group(1) if mt else None
     ml = re.search(r'label\s*(?:=|in)\s*"?([^")\s]+)"?', cql)
@@ -436,6 +447,8 @@ async def confluence_cql_search(request: Request):
     everything = store.search_documents(conn, term, "confluence", ids, limit=100_000, offset=0)
 
     def _match(r) -> bool:
+        if space_unresolvable:
+            return False
         if container and r["space"] != container:
             return False
         if want_type and (r["subtype"] or "page") != want_type:
@@ -471,9 +484,17 @@ async def confluence_content_list(request: Request):
     ids = auth.visible_ids(request, caller)
     expand = request.query_params.get("expand", "")
     space_key = request.query_params.get("spaceKey")
-    container = _space_container_for_key(conn, space_key) if space_key else None
     limit = _int(request.query_params.get("limit"), 25)
     start = _int(request.query_params.get("start"), 0)
+    if space_key:
+        container = _space_container_for_key(conn, space_key)
+        if container is None:
+            # spaceKey given but unresolvable: real Confluence returns zero matches, never the
+            # unfiltered corpus — do not let this collapse to the "no spaceKey" (container=None) case.
+            links = {"base": f"{_site(request)}/wiki"}
+            return {"results": [], "start": start, "limit": limit, "size": 0, "_links": links}
+    else:
+        container = None
     total = store.count_documents(conn, "confluence", container, ids)
     rows = store.list_documents(conn, "confluence", container, ids, limit=limit, offset=start)
     results = [_confluence_page(conn, request, r, expand) for r in rows]

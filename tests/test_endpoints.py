@@ -265,6 +265,50 @@ def test_github_pulls_filtered_by_state(client, admin_h, org):
     assert [p["title"] for p in all_body] == ["Fix token-bucket refill off-by-one"]
 
 
+def test_confluence_content_filtered_by_space_key(client, admin_h):
+    from app import synth
+
+    # literal container name (the natural spaceKey value) narrows to that space only
+    by_name = client.get("/atlassian/wiki/rest/api/content", headers=admin_h,
+                         params={"spaceKey": "handbook"}).json()
+    titles = {r["title"] for r in by_name["results"]}
+    assert titles == {"Engineering Handbook", "On-call Runbook"}
+    assert "Compensation Bands 2026" not in titles
+
+    # the synthesized (hash-suffixed) key resolves to the same space
+    synth_key = synth.confluence_space_key("handbook")
+    by_synth_key = client.get("/atlassian/wiki/rest/api/content", headers=admin_h,
+                              params={"spaceKey": synth_key}).json()
+    assert {r["title"] for r in by_synth_key["results"]} == titles
+
+    # an unresolvable spaceKey is strict: zero results, not the unfiltered corpus
+    bogus = client.get("/atlassian/wiki/rest/api/content", headers=admin_h,
+                       params={"spaceKey": "BOGUS_NOPE"}).json()
+    assert bogus["results"] == [] and bogus["size"] == 0
+
+    # no spaceKey at all -> unfiltered (still includes the other space)
+    unfiltered = client.get("/atlassian/wiki/rest/api/content", headers=admin_h).json()
+    assert "Compensation Bands 2026" in {r["title"] for r in unfiltered["results"]}
+
+
+def test_confluence_cql_search_filtered_by_space(client, admin_h):
+    # "software" appears only in cf-handbook's body (SAMPLE), so this term narrows to one hit
+    # when the space clause matches, and correctly to zero when it points elsewhere/unresolvable
+    # (proving the space filter — not the text term — is what drives the 0, in the negative cases).
+    narrowed = client.get("/atlassian/wiki/rest/api/search", headers=admin_h,
+                          params={"cql": 'text~"software" and space=handbook'}).json()
+    assert {r["title"] for r in narrowed["results"]} == {"Engineering Handbook"}
+    assert narrowed["totalSize"] == 1
+
+    other_space = client.get("/atlassian/wiki/rest/api/search", headers=admin_h,
+                             params={"cql": 'text~"software" and space=people-ops'}).json()
+    assert other_space["results"] == [] and other_space["totalSize"] == 0
+
+    bogus = client.get("/atlassian/wiki/rest/api/search", headers=admin_h,
+                       params={"cql": 'text~"software" and space=BOGUS_NOPE'}).json()
+    assert bogus["results"] == [] and bogus["totalSize"] == 0
+
+
 def test_confluence_storage_roundtrip(client, admin_h, ro_conn):
     doc = ro_conn.execute("SELECT * FROM confluence_pages LIMIT 1").fetchone()
     from app import synth

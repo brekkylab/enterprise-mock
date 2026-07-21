@@ -44,6 +44,7 @@ def test_confluence(live_server):
     docs = reader.load_data(space_key="handbook", max_num_results=50)
     assert docs, "expected at least one page Document"
     assert any("How we build software" in d.text for d in docs)  # SAMPLE cf-handbook body
+    assert all("Compensation Bands" not in d.text for d in docs)  # cf-comp (people-ops) excluded
 
 
 def _patch_s3fs_walk() -> None:
