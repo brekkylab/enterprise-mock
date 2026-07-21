@@ -93,3 +93,10 @@ def test_confluence_space_key_unique_for_colliding_names():
     b = synth.confluence_space_key("eng-sre/runbooks")
     assert a != b
     assert synth.confluence_space_key("eng-serving-runtime") == a  # deterministic
+
+
+def test_jira_project_key_unique_for_colliding_names():
+    a = synth.jira_project_key("eng-serving-runtime")
+    b = synth.jira_project_key("eng-sre/runbooks")
+    assert a != b
+    assert synth.jira_project_key("eng-serving-runtime") == a  # deterministic

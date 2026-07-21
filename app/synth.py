@@ -170,7 +170,11 @@ def _key(container: str, fallback: str) -> str:
 
 
 def jira_project_key(container: str) -> str:
-    return _key(container, "PROJ")
+    """A project key unique per container: the readable word-initials prefix (see :func:`_key`)
+    plus a short hash of the full name, so distinct projects never collide on the same key (and the
+    router's reverse key->project lookup + the derived issue keys stay unambiguous). Deterministic,
+    valid Jira shape (uppercase letter start, uppercase alnum)."""
+    return _key(container, "PROJ") + _digest(container)[:6].upper()
 
 
 def confluence_space_key(container: str) -> str:
