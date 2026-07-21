@@ -32,6 +32,7 @@ SOURCE_TABLE = {
     "jira": "jira_issues",
     "confluence": "confluence_pages",
     "notion": "notion_pages",
+    "s3": "s3_objects",
 }
 
 
@@ -66,6 +67,7 @@ GROUPING = {
     "jira": ("jira_projects", "project"),
     "confluence": ("confluence_spaces", "space"),
     "notion": ("notion_teamspaces", "teamspace"),
+    "s3": ("s3_buckets", "bucket"),
 }
 
 
@@ -180,6 +182,16 @@ CREATE TABLE IF NOT EXISTS notion_pages (
 CREATE INDEX IF NOT EXISTS idx_notion_teamspace ON notion_pages(teamspace);
 CREATE INDEX IF NOT EXISTS idx_notion_parent ON notion_pages(parent_id);
 
+-- ── S3: objects live in buckets (flat key namespace); no comments ──
+CREATE TABLE IF NOT EXISTS s3_objects (
+    doc_id TEXT PRIMARY KEY, bucket TEXT NOT NULL, author_email TEXT NOT NULL,
+    title TEXT NOT NULL, content TEXT NOT NULL,
+    key TEXT NOT NULL, subtype TEXT, content_type TEXT, size INTEGER,
+    created_ts INTEGER NOT NULL, updated_ts INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_s3_bucket ON s3_objects(bucket);
+CREATE INDEX IF NOT EXISTS idx_s3_key ON s3_objects(bucket, key);
+
 -- ── shared relationship tables (keyed by doc_id / names) ──
 -- ── per-service grouping tables (name of the grouping unit + its owning ACL group) ──
 CREATE TABLE IF NOT EXISTS slack_channels    (channel TEXT PRIMARY KEY, group_id TEXT);
@@ -189,6 +201,7 @@ CREATE TABLE IF NOT EXISTS github_repos      (repo    TEXT PRIMARY KEY, group_id
 CREATE TABLE IF NOT EXISTS jira_projects     (project TEXT PRIMARY KEY, group_id TEXT);
 CREATE TABLE IF NOT EXISTS confluence_spaces (space   TEXT PRIMARY KEY, group_id TEXT);
 CREATE TABLE IF NOT EXISTS notion_teamspaces (teamspace TEXT PRIMARY KEY, group_id TEXT);
+CREATE TABLE IF NOT EXISTS s3_buckets        (bucket  TEXT PRIMARY KEY, group_id TEXT);
 
 CREATE TABLE IF NOT EXISTS principals (
     id TEXT PRIMARY KEY, type TEXT NOT NULL, display_name TEXT, email TEXT
