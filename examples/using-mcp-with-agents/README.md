@@ -108,6 +108,11 @@ endpoint override, so the example just sets:
 
 Note this server is a **broad AWS-CLI wrapper**, not S3-specific — under the hood the agent runs
 `aws s3api …` commands (e.g. `list-objects-v2`, `get-object`) via the server's `call_aws` tool.
+Because it exposes *all* of the AWS CLI (not a domain search tool like the Notion/Atlassian
+servers), the agent has no way to know the corpus lives in S3 — left unguided it wanders off to
+AWS's actual search/config services (Kendra, SSM, …). So `s3.py`'s question **explicitly tells it
+to search S3 only** (list buckets → list objects → get object). This steering is the price of
+using a generic AWS-CLI MCP for retrieval.
 
 **Gotcha — loopback-only endpoint:** awslabs' server has an SSRF guard (`_validate_endpoint` in
 its command parser) that only accepts a **loopback** endpoint — `localhost` / `127.0.0.1` / `::1`.

@@ -18,9 +18,9 @@ import sys
 
 INSTRUCTIONS = (
     "You answer questions about the company using its knowledge base, reached through the "
-    "provided MCP tools. Be efficient: make at most a few tool calls (one search, then fetch the "
-    "single most relevant item), then answer. Only use information returned by the tools; cite "
-    "the titles."
+    "provided MCP tools. Make a few targeted tool calls to locate and read the most relevant "
+    "documents, then answer — don't wander across unrelated tools/services. Only use information "
+    "returned by the tools; cite the titles."
 )
 
 

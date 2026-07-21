@@ -44,8 +44,10 @@ CORPUS = [
      "content": "When a deploy or migration spikes checkout latency: check the payments "
                 "dashboards, roll back the last change, and page the on-call engineer."},
 ]
-QUESTION = ("Find the incident about checkout latency and summarize it, then find the on-call "
-            "runbook. Cite the titles.")
+QUESTION = ("The company's knowledge base is stored as objects in S3 buckets — search it with the "
+            "S3 API only (list the buckets, list a bucket's objects, then get the relevant "
+            "object); do not use other AWS services. Find the incident about checkout latency and "
+            "summarize it, then find the on-call runbook. Cite the object keys.")
 
 
 def build_params(base_url: str, access_key: str, secret_key: str) -> StdioServerParameters:
