@@ -151,21 +151,22 @@ restriction — they take the hostname directly.)
 
 These four sources have no vendor MCP server that accepts a base-URL override (see "Why these need
 the bridge" below). Instead of a vendor server, each launcher runs the **generic bridge**
-`_openapi_bridge.py` (Python, [FastMCP](https://gofastmcp.com)) as a stdio subprocess:
+`_openapi_bridge.py` (Python, [FastMCP](https://gofastmcp.com)) as a stdio subprocess. The bridge is
+deliberately thin — the mock does the spec work:
 
-- it fetches the mock's own **`/openapi.json`** — now a typed contract (the routers declare their
-  query params and response models), so the tools carry real parameters and schemas;
-- **slices** it to the source's paths (`--source github` → `/github/*`) and **dedupes** the
-  operationId aliases the mock exposes for vendor fidelity (GET+POST on one path, Jira v2/v3),
-  keeping one callable tool per operation;
-- serves those operations over stdio via `FastMCP.from_openapi()` on an `httpx.AsyncClient` whose
-  base URL is the mock and whose **`Authorization: Bearer <token>`** header is the mock token — so
-  the mock resolves the token to a user and **enforces that user's ACL** on every tool call.
+- the mock serves an **MCP-ready spec per source** at **`GET /mcp/openapi/<source>`** — its own
+  typed `/openapi.json` (the routers declare query params and response models) sliced to that
+  source and with the GET/POST and Jira v2/v3 fidelity aliases collapsed to one operation each
+  (the raw spec carries ~14 duplicate operationIds, which an MCP tool set can't have). This lives
+  in `app/mcp_spec.py`, so there is nothing to clean up client-side;
+- the bridge just fetches that spec and serves it over stdio via `FastMCP.from_openapi()` on an
+  `httpx.AsyncClient` whose base URL is the mock and whose **`Authorization`** header is the mock
+  token — so the mock resolves the token to a user and **enforces that user's ACL** on every call.
 
 stdio (not streamable-HTTP): FastMCP's HTTP mode has a known bug forwarding the client's
-`Authorization` header downstream. Auth is the same mock token as Notion (`--token`, default admin;
-per-user from `GET /_mock/users`). Adding a source is one `SOURCES` entry in `_openapi_bridge.py` plus a
-thin launcher — same "one entry per backend" shape as the vendor examples.
+`Authorization` header downstream. Auth: `--username` present → HTTP Basic (Atlassian); otherwise
+`Bearer` (`--token`, default admin; per-user from `GET /_mock/users`). Adding a source is one entry
+in `app/mcp_spec.py`'s `SOURCE_PREFIXES` plus a thin launcher.
 
 **Notion and Atlassian** already have vendor-server launchers above, but they also work through the
 generic bridge (no vendor server) — run `_openapi_bridge.py` directly:
@@ -176,9 +177,9 @@ python examples/using-mcp-with-agents/_openapi_bridge.py --source atlassian --ba
 ```
 
 Atlassian authenticates with HTTP Basic (`--username` + the mock token as the password), and its
-`SOURCES` entry covers both the `/atlassian` (Jira) and `/wiki` (Confluence) path roots. **S3 is the
-one source with no bridge** — it is SigV4-signed (a static `Authorization` header can't sign each
-request); use the vendor `s3.py` example.
+`SOURCE_PREFIXES` entry covers both the `/atlassian` (Jira) and `/wiki` (Confluence) path roots.
+**S3 is the one source with no bridge** — it is SigV4-signed (a static `Authorization` header can't
+sign each request), so it is absent from `/mcp/openapi/*`; use the vendor `s3.py` example.
 
 ## Why these need the bridge (no base-URL-switchable vendor server)
 

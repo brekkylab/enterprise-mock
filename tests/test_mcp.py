@@ -176,20 +176,37 @@ def test_mcp_s3_lists_objects(live_server):
 
 # ------------------------------------------------------ GitHub (generic OpenAPI→MCP bridge)
 
-def _bridge_params(source: str, base: str, token: str, username: str | None = None):
-    """Run the tests' own OpenAPI→MCP bridge (``tests/_openapi_bridge_probe.py``) as a stdio MCP
-    server — a self-contained copy of the example bridge, so the test suite never reaches into
-    ``examples/`` (see that file's header). Launched by path just like the docker/npx/uvx servers."""
-    import sys
-    from pathlib import Path
+def _bridge_call(base, source, token, *, tool_pred, args, ok_pred, username=None) -> bool:
+    """Exercise the OpenAPI→MCP bridge path WITHOUT touching ``examples/``.
 
-    from mcp import StdioServerParameters
+    Fetches the mock's MCP-ready spec (``GET /mcp/openapi/<source>`` — produced by ``app.mcp_spec``,
+    which owns the slice/dedupe logic) and serves it via an in-memory FastMCP client over an auth'd
+    httpx client. That is the whole of what the example bridge does; the meaningful logic lives in
+    the app and is unit-tested in ``tests/test_mcp_spec.py``. Returns ``ok_pred`` over the tool's
+    response text; a blocked/errored call is ``False``."""
+    import base64 as b64
 
-    bridge = str(Path(__file__).with_name("_openapi_bridge_probe.py"))
-    args = [bridge, "--source", source, "--base-url", base.rstrip("/"), "--token", token]
-    if username:
-        args += ["--username", username]
-    return StdioServerParameters(command=sys.executable, args=args)
+    import httpx
+    from fastmcp import Client, FastMCP
+
+    spec = httpx.get(f"{base}/mcp/openapi/{source}", timeout=10).json()
+    if username:  # Atlassian: Basic username:token (the api_token IS the mock token)
+        header = {"Authorization": "Basic " + b64.b64encode(f"{username}:{token}".encode()).decode()}
+    else:
+        header = {"Authorization": f"Bearer {token}"}
+
+    async def _go():
+        client = httpx.AsyncClient(base_url=base, headers=header, timeout=30)
+        server = FastMCP.from_openapi(openapi_spec=spec, client=client, validate_output=False)
+        async with Client(server) as c:
+            tool = next(t for t in (await c.list_tools()) if tool_pred(t.name))
+            res = await c.call_tool(tool.name, args)
+            return ok_pred("".join(getattr(bl, "text", "") for bl in res.content))
+
+    try:
+        return asyncio.run(_go())
+    except Exception:  # noqa: BLE001 — a blocked read may surface as a tool error
+        return False
 
 
 def test_mcp_github_bridge_acl_enforced(live_server):
@@ -203,14 +220,10 @@ def test_mcp_github_bridge_acl_enforced(live_server):
     owner, repo = settings.org_name, row["repo"]
 
     def reads(token):
-        try:
-            return asyncio.run(_call(
-                _bridge_params("github", base, token),
-                tool_pred=lambda n: n.startswith("get_issue"),
-                args={"owner": owner, "repo": repo, "number": number},
-                ok_pred=lambda t: '"number"' in t and '"title"' in t))
-        except Exception:  # noqa: BLE001 — a blocked read may surface as a tool error
-            return False
+        return _bridge_call(base, "github", token,
+                            tool_pred=lambda n: n.startswith("get_issue"),
+                            args={"owner": owner, "repo": repo, "number": number},
+                            ok_pred=lambda t: '"number"' in t and '"title"' in t)
 
     assert reads(settings.admin_token), "admin should read the issue through the OpenAPI bridge"
     assert not reads(user["token"]), f"{email} should be blocked from the issue via the bridge"
@@ -227,14 +240,10 @@ def test_mcp_slack_bridge_acl_enforced(live_server):
     assert row is not None, f"no Slack message is ACL-restricted from {email} in the sample corpus"
 
     def finds(token):
-        try:
-            return asyncio.run(_call(
-                _bridge_params("slack", base, token),
-                tool_pred=lambda n: n.startswith("search_messages"),
-                args={"query": "reorg"},          # matches the restricted people-confidential message
-                ok_pred=lambda t: "headcount" in t))  # a word only the matched message carries
-        except Exception:  # noqa: BLE001
-            return False
+        return _bridge_call(base, "slack", token,
+                            tool_pred=lambda n: n.startswith("search_messages"),
+                            args={"query": "reorg"},   # the restricted people-confidential message
+                            ok_pred=lambda t: "headcount" in t)  # a word only that message carries
 
     assert finds(settings.admin_token), "admin search should surface the restricted message"
     assert not finds(user["token"]), f"{email} search should not surface the restricted message"
@@ -252,14 +261,10 @@ def test_mcp_gmail_bridge_acl_enforced(live_server):
     msg_id = row["doc_id"]
 
     def reads(token):
-        try:
-            return asyncio.run(_call(
-                _bridge_params("gmail", base, token),
-                tool_pred=lambda n: n.startswith("gmail_messages_get"),
-                args={"user_id": "me", "msg_id": msg_id, "format": "full"},
-                ok_pred=lambda t: '"payload"' in t or '"snippet"' in t))
-        except Exception:  # noqa: BLE001
-            return False
+        return _bridge_call(base, "gmail", token,
+                            tool_pred=lambda n: n.startswith("gmail_messages_get"),
+                            args={"user_id": "me", "msg_id": msg_id, "format": "full"},
+                            ok_pred=lambda t: '"payload"' in t or '"snippet"' in t)
 
     assert reads(settings.admin_token), "admin should read the message through the bridge"
     assert not reads(user["token"]), f"{email} should be blocked from the message via the bridge"
@@ -277,14 +282,10 @@ def test_mcp_drive_bridge_acl_enforced(live_server):
     file_id = row["doc_id"]
 
     def reads(token):
-        try:
-            return asyncio.run(_call(
-                _bridge_params("drive", base, token),
-                tool_pred=lambda n: n.startswith("drive_files_get"),
-                args={"file_id": file_id},
-                ok_pred=lambda t: '"name"' in t and '"mimeType"' in t))
-        except Exception:  # noqa: BLE001
-            return False
+        return _bridge_call(base, "drive", token,
+                            tool_pred=lambda n: n.startswith("drive_files_get"),
+                            args={"file_id": file_id},
+                            ok_pred=lambda t: '"name"' in t and '"mimeType"' in t)
 
     assert reads(settings.admin_token), "admin should read the file through the bridge"
     assert not reads(user["token"]), f"{email} should be blocked from the file via the bridge"
@@ -303,14 +304,10 @@ def test_mcp_notion_bridge_acl_enforced(live_server):
     page_id = synth.notion_id(row["doc_id"])
 
     def reads(token):
-        try:
-            return asyncio.run(_call(
-                _bridge_params("notion", base, token),
-                tool_pred=lambda n: n.startswith("get_page"),
-                args={"page_id": page_id},
-                ok_pred=lambda t: '"object": "page"' in t or '"object":"page"' in t))
-        except Exception:  # noqa: BLE001
-            return False
+        return _bridge_call(base, "notion", token,
+                            tool_pred=lambda n: n.startswith("get_page"),
+                            args={"page_id": page_id},
+                            ok_pred=lambda t: '"object": "page"' in t or '"object":"page"' in t)
 
     assert reads(settings.admin_token), "admin should read the page through the bridge"
     assert not reads(user["token"]), f"{email} should be blocked from the page via the bridge"
@@ -329,14 +326,10 @@ def test_mcp_atlassian_bridge_acl_enforced(live_server):
     key = synth.jira_key(row["doc_id"], synth.jira_project_key(row["project"]))
 
     def reads(token):
-        try:
-            return asyncio.run(_call(
-                _bridge_params("atlassian", base, token, username="svc@example.com"),
-                tool_pred=lambda n: n.startswith("jira_get_issue"),
-                args={"key": key},
-                ok_pred=lambda t: '"key"' in t and '"fields"' in t))
-        except Exception:  # noqa: BLE001
-            return False
+        return _bridge_call(base, "atlassian", token, username="svc@example.com",
+                            tool_pred=lambda n: n.startswith("jira_get_issue"),
+                            args={"key": key},
+                            ok_pred=lambda t: '"key"' in t and '"fields"' in t)
 
     assert reads(settings.admin_token), "admin should read the issue through the bridge (basic auth)"
     assert not reads(user["token"]), f"{email} should be blocked from the issue via the bridge"
