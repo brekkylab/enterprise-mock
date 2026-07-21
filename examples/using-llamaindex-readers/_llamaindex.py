@@ -33,7 +33,7 @@ __all__ = [
     "serve_or_connect", "google_oauth_user", "google_service_account_info",
     "slack_base_url", "notion_base_url", "s3_base_url", "github_base_url",
     "atlassian_base_url", "drop_self_from_syspath",
-    "point_gmail_at", "point_drive_at", "patch_notion_at",
+    "point_gmail_at", "point_drive_at", "patch_notion_at", "patch_s3fs_walk",
 ]
 
 
@@ -62,6 +62,33 @@ def atlassian_base_url(base_url: str) -> str:
     """Atlassian base for Jira `PATauth.server_url` / `ConfluenceReader(base_url=...)`; the
     respective client appends `/rest/api/<ver>` (Jira) or `/wiki/rest/api` (Confluence)."""
     return f"{base_url.rstrip('/')}/atlassian"
+
+
+def patch_s3fs_walk() -> None:
+    """Work around a fsspec/s3fs compatibility bug (reproduced with fsspec/s3fs 2026.6.0, the
+    latest release of both as of writing): `S3Reader.load_data()` in whole-bucket mode (no `key`)
+    calls `SimpleDirectoryReader._add_files`, which always does
+    `fs.walk(input_dir, topdown=True, maxdepth=...)`. The sync `AbstractFileSystem.walk` declares
+    `topdown` as an explicit parameter (so it never reaches `ls`), but `S3FileSystem` is async and
+    inherits `AsyncFileSystem._walk`, which treats `topdown` as an opaque `**kwargs` entry and
+    forwards it straight through to `_ls()` — which doesn't accept it, raising
+    ``TypeError: S3FileSystem._ls() got an unexpected keyword argument 'topdown'``. This is a
+    client-side bug independent of the mock (reproduces identically against real AWS S3 with the
+    same library versions), so no mock-side change can fix it. Idempotent; safe to call more than
+    once or from multiple scripts in the same process."""
+    from fsspec.asyn import AsyncFileSystem
+
+    if getattr(AsyncFileSystem._walk, "_mock_patched", False):
+        return
+    _orig_walk = AsyncFileSystem._walk
+
+    async def _walk(self, path, maxdepth=None, on_error="omit", **kwargs):
+        kwargs.pop("topdown", None)
+        async for item in _orig_walk(self, path, maxdepth=maxdepth, on_error=on_error, **kwargs):
+            yield item
+
+    _walk._mock_patched = True
+    AsyncFileSystem._walk = _walk
 
 
 def drop_self_from_syspath(file: str) -> None:

@@ -24,3 +24,11 @@ host argument directly; four hardcode the host, so a tiny shim in `_llamaindex.p
 
 All reads are ACL-scoped by the credential you pass (`--token`, or the admin token by default),
 exactly as against the real API.
+
+**S3 note:** `S3Reader.load_data()` in whole-bucket mode hits a client-side fsspec/s3fs
+compatibility bug (as of fsspec/s3fs 2026.6.0, the latest release of both) where
+`SimpleDirectoryReader`'s directory walk passes a `topdown` kwarg that `S3FileSystem`'s async
+`_ls()` doesn't accept. It reproduces against real AWS S3 too — unrelated to the mock — so
+`s3.py` calls `_llamaindex.patch_s3fs_walk()` (a small monkeypatch) before constructing the
+reader; `tests/test_llamaindex.py` duplicates the same patch inline. No path-style-addressing
+workaround was needed — s3fs auto-selects path-style against a `localhost` endpoint.
