@@ -55,6 +55,10 @@ class SlackUserInfo(_SlackOk):
     user: dict = {}
 
 
+class SlackApiTest(_SlackOk):
+    args: dict = {}
+
+
 class SlackSearch(_SlackOk):
     messages: dict = {}
 
@@ -138,7 +142,7 @@ def _user_obj(conn, email: str) -> dict:
     }
 
 
-@router.api_route("/api.test", methods=["GET", "POST"])
+@router.api_route("/api.test", methods=["GET", "POST"], response_model=SlackApiTest)
 async def api_test(request: Request):
     """Real Slack's connectivity check — no auth required, echoes back any params other than
     `error` (which flips the response to an error envelope carrying that value). Several real

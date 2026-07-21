@@ -830,6 +830,14 @@ def test_slack_responses_unchanged_by_enrichment(client, admin_h):
     assert srch["ok"] and "messages" in srch and "matches" in srch["messages"]
 
 
+def test_slack_api_test_has_typed_response_schema(client):
+    # api.test is a new endpoint (readers probe it on connect); enrich it like its siblings.
+    op = client.get("/openapi.json").json()["paths"]["/slack/api/api.test"]["get"]
+    schema = op["responses"]["200"]["content"]["application/json"]["schema"]
+    assert schema != {}
+    assert "$ref" in schema or schema.get("type") in ("object", "array")
+
+
 # --- OpenAPI enrichment: gmail ------------------------------------------------------------
 
 def test_gmail_messages_documents_q_param(client):
@@ -952,6 +960,15 @@ def test_atlassian_confluence_search_documents_cql(client):
 def test_atlassian_issue_has_typed_response_schema(client):
     op = client.get("/openapi.json").json()["paths"]["/atlassian/rest/api/3/issue/{key}"]["get"]
     assert op["responses"]["200"]["content"]["application/json"]["schema"] != {}
+
+
+def test_atlassian_serverinfo_has_typed_response_schema(client):
+    # serverInfo is a new alias (jira PyPI client probes it on connect); enrich it like its siblings.
+    for ver in ("2", "3"):
+        op = client.get("/openapi.json").json()["paths"][f"/atlassian/rest/api/{ver}/serverInfo"]["get"]
+        schema = op["responses"]["200"]["content"]["application/json"]["schema"]
+        assert schema != {}
+        assert "$ref" in schema or schema.get("type") in ("object", "array")
 
 
 def test_atlassian_responses_unchanged_by_enrichment(client, admin_h):

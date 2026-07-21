@@ -31,6 +31,12 @@ class _ALoose(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class JiraServerInfo(_ALoose):
+    baseUrl: str
+    version: str
+    deploymentType: str = "Cloud"
+
+
 class JiraSearchResult(_ALoose):
     issues: list[dict] = []
     isLast: bool = True
@@ -108,8 +114,8 @@ def _jira_container_for_key(conn, token: str) -> str | None:
     return None
 
 
-@router.get("/rest/api/2/serverInfo")  # jira PyPI client probes this on connect
-@router.get("/rest/api/3/serverInfo")
+@router.get("/rest/api/2/serverInfo", response_model=JiraServerInfo)  # jira PyPI client probes this on connect
+@router.get("/rest/api/3/serverInfo", response_model=JiraServerInfo)
 async def jira_server_info(request: Request):
     site = _site(request)
     return {"baseUrl": site, "version": "1000.0.0", "deploymentType": "Cloud",
