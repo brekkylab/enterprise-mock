@@ -266,26 +266,22 @@ def test_notion_byo_rejects_bad_subtype():
     assert any("subtype" in e for e in errs)
 
 
-S3_RECORDS = [
-    {"source_type": "s3", "bucket": "eng-artifacts", "key": "runbooks/oncall.md",
-     "title": "On-call Runbook", "content": "check dashboards, roll back, page on-call",
-     "content_type": "text/markdown", "author_email": "ava@acme.com",
-     "author_groups": ["engineering"], "visibility": "public"},
-    {"source_type": "s3", "bucket": "eng-artifacts", "key": "secret/comp.txt",
-     "title": "Comp", "content": "confidential", "author_email": "hana@acme.com",
-     "author_groups": ["people"], "visibility": "group", "group": "people"},
-    # multibyte content: size must be the UTF-8 BYTE length, not the character count
-    {"source_type": "s3", "bucket": "eng-artifacts", "key": "notes/unicode.md",
-     "title": "Unicode", "content": "résumé ☕ dashboards", "content_type": "text/markdown",
-     "author_email": "ava@acme.com", "author_groups": ["engineering"], "visibility": "public"},
-]
-
-_UNICODE_BODY = "résumé ☕ dashboards"
-
-
 def test_s3_byo_load(tmp_path):
+    unicode_body = "résumé ☕ dashboards"  # multibyte: size is the UTF-8 byte length, not char count
+    records = [
+        {"source_type": "s3", "bucket": "eng-artifacts", "key": "runbooks/oncall.md",
+         "title": "On-call Runbook", "content": "check dashboards, roll back, page on-call",
+         "content_type": "text/markdown", "author_email": "ava@acme.com",
+         "author_groups": ["engineering"], "visibility": "public"},
+        {"source_type": "s3", "bucket": "eng-artifacts", "key": "secret/comp.txt",
+         "title": "Comp", "content": "confidential", "author_email": "hana@acme.com",
+         "author_groups": ["people"], "visibility": "group", "group": "people"},
+        {"source_type": "s3", "bucket": "eng-artifacts", "key": "notes/unicode.md",
+         "title": "Unicode", "content": unicode_body, "content_type": "text/markdown",
+         "author_email": "ava@acme.com", "author_groups": ["engineering"], "visibility": "public"},
+    ]
     corpus = tmp_path / "s3.jsonl"
-    corpus.write_text("\n".join(json.dumps(r) for r in S3_RECORDS))
+    corpus.write_text("\n".join(json.dumps(r) for r in records))
     settings = Settings(data_dir=tmp_path)
     res = load(corpus, settings)
     assert res["counts"]["s3"] == 3
@@ -294,8 +290,8 @@ def test_s3_byo_load(tmp_path):
     assert rows["runbooks/oncall.md"]["content_type"] == "text/markdown"
     assert rows["runbooks/oncall.md"]["size"] == len("check dashboards, roll back, page on-call")
     # size is the UTF-8 byte length, which is strictly greater than the character count here
-    assert rows["notes/unicode.md"]["size"] == len(_UNICODE_BODY.encode("utf-8"))
-    assert rows["notes/unicode.md"]["size"] != len(_UNICODE_BODY)
+    assert rows["notes/unicode.md"]["size"] == len(unicode_body.encode("utf-8"))
+    assert rows["notes/unicode.md"]["size"] != len(unicode_body)
     assert store.get_container(conn, "s3", "eng-artifacts") is not None
     conn.close()
 
