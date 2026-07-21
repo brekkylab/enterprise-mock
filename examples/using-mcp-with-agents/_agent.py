@@ -70,11 +70,19 @@ async def _run_openai(params, question: str) -> None:
         print(result.final_output)
 
 
+_API_KEYS = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+
+
 def run_agent(agent: str | None, params, question: str) -> None:
     """Run ``question`` against the MCP server described by ``params`` using ``agent``
     (``anthropic`` — the default — or ``openai``)."""
     runners = {"anthropic": _run_anthropic, "openai": _run_openai}
-    fn = runners.get((agent or "anthropic").lower())
-    if fn is None:
+    choice = (agent or "anthropic").lower()
+    if choice not in runners:
         sys.exit(f"--agent must be one of {sorted(runners)}, got {agent!r}")
-    asyncio.run(fn(params, question))
+    # Fail early with a clear message rather than a cryptic SDK auth error mid-run.
+    if not os.environ.get(_API_KEYS[choice]):
+        other = "openai" if choice == "anthropic" else "anthropic"
+        sys.exit(f"{_API_KEYS[choice]} is not set — the --agent {choice} run needs it. "
+                 f"Export {_API_KEYS[choice]}=…, or use --agent {other} (needs {_API_KEYS[other]}).")
+    asyncio.run(runners[choice](params, question))

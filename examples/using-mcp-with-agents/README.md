@@ -109,6 +109,13 @@ endpoint override, so the example just sets:
 Note this server is a **broad AWS-CLI wrapper**, not S3-specific — under the hood the agent runs
 `aws s3api …` commands (e.g. `list-objects-v2`, `get-object`) via the server's `call_aws` tool.
 
+**Gotcha — IP-only endpoint:** awslabs' server validates the endpoint and only accepts an **IP**
+address, so a hostname `--url` (e.g. an ALB-fronted `https://…` deployment) is rejected with
+`Could not resolve endpoint …`. To drive such a deployment, tunnel it and point `--url` at the
+local port: `ssh -fN -L 18000:127.0.0.1:8000 user@host`, then
+`--url http://127.0.0.1:18000 --access-key … --secret-key …`. (boto3 and mirage have no such
+restriction — they take the hostname directly.)
+
 ## Why not the other services
 
 The remaining services' MCP servers **cannot** be pointed at a self-hosted mock, so no example is

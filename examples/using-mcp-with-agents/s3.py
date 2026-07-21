@@ -6,6 +6,12 @@ LLM agent answer a question by calling its MCP tools (which shell the AWS CLI). 
 client honors a first-class `AWS_ENDPOINT_URL` override and SigV4-signs every call, so pointing it
 at the mock is a handful of env vars — no Docker/host-gateway tricks.
 
+NOTE: awslabs' server validates the endpoint and only accepts an **IP** address, not a hostname —
+a hostname `--url` (e.g. an ALB-fronted deployment) is rejected ("Could not resolve endpoint …").
+Reach such a deployment through an SSH tunnel and point `--url` at the forwarded local port:
+    ssh -fN -L 18000:127.0.0.1:8000 user@host
+    python examples/using-mcp-with-agents/s3.py --url http://127.0.0.1:18000 --access-key … --secret-key …
+
 S3 authenticates with an AWS access-key/secret pair (not a bearer token). With `--url` (a running
 server) `--access-key` / `--secret-key` are **required** — pass real AWS keys, or a pair from
 `GET <url>/_mock/users` (each user, and the admin, has an `s3_access_key_id` / `s3_secret_access_key`
