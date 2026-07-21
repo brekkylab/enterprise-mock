@@ -13,8 +13,9 @@ same tool, same object, different identity.
   ``AWS_ENDPOINT_URL``, lists a bucket's objects through a real signed AWS CLI call.
 
 All require the ``mcp`` package. The stdio params below intentionally **duplicate** the wiring in
-``examples/using-mcp-with-agents/_servers.py`` rather than importing it — a test must not reach
-into ``examples/`` (no ``sys.path`` hacks); a little copied setup is the lesser evil.
+the per-service example files (``examples/using-mcp-with-agents/{atlassian,notion,s3}.py``) rather
+than importing them — a test must not reach into ``examples/`` (no ``sys.path`` hacks); a little
+copied setup is the lesser evil.
 """
 from __future__ import annotations
 
@@ -41,7 +42,7 @@ def _docker_available() -> bool:
 
 
 def _atlassian_params(base: str, token: str):
-    """`docker run` args pointing mcp-atlassian at a local mock (see examples/.../_servers.py).
+    """`docker run` args pointing mcp-atlassian at a local mock (see examples/.../atlassian.py).
 
     mcp-atlassian only classifies a host as Atlassian *Cloud* when it ends in `.atlassian.net`, so
     use a fake `mock.atlassian.net` mapped to the host via `--add-host`, and Basic auth where the
@@ -145,8 +146,9 @@ def test_mcp_notion_acl_enforced(live_server):
 
 def _s3_params(base: str, token: str):
     """`uvx` args pointing the awslabs aws-api MCP server at the mock via AWS_ENDPOINT_URL (see
-    examples/.../_servers.py). The server shells the AWS CLI, whose boto3 client SigV4-signs each
-    call; the mock verifies the signature against the access-key/secret derived from ``token``."""
+    examples/.../s3.py). The server shells the AWS CLI, whose boto3 client SigV4-signs each call;
+    the mock verifies the signature against the access-key/secret derived from ``token`` (the same
+    pair GET /_mock/users exposes)."""
     from mcp import StdioServerParameters
 
     return StdioServerParameters(

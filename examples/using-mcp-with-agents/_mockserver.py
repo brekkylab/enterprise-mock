@@ -74,8 +74,31 @@ def cli_token(default: str | None = TOKEN) -> str | None:
 
 
 def cli_username(default: str | None = None) -> str | None:
-    """``--username`` if given, else ``default`` (Atlassian Basic-auth identity; see _servers)."""
+    """``--username`` if given, else ``default`` (Atlassian Basic-auth identity for mcp-atlassian)."""
     return cli_arg("username") or default
+
+
+def s3_credentials(base_url: str) -> tuple[str, str]:
+    """The (access_key_id, secret_access_key) for the S3 example — S3 authenticates with an AWS
+    keypair, not a bearer token.
+
+    ``--access-key`` + ``--secret-key`` on the command line win (real AWS creds). Otherwise the
+    pair is fetched from ``GET /_mock/users``: ``--user <email>`` picks that user's keys (responses
+    are ACL-filtered to them), else the admin keypair (sees everything)."""
+    ak, sk = cli_arg("access-key"), cli_arg("secret-key")
+    if ak and sk:
+        print("authenticating with --access-key/--secret-key")
+        return ak, sk
+    with urllib.request.urlopen(f"{base_url.rstrip('/')}/_mock/users") as r:
+        data = json.load(r)
+    want = cli_arg("user")
+    if want:
+        who = next((u for u in data["users"] if u["email"] == want), None)
+        if who is None:
+            raise SystemExit(f"--user {want!r} not found in /_mock/users")
+        print(f"using S3 keys for {want} → responses are ACL-filtered to that user")
+        return who["s3_access_key_id"], who["s3_secret_access_key"]
+    return data["admin_s3_access_key_id"], data["admin_s3_secret_access_key"]
 
 
 def _healthy(url: str) -> bool:
