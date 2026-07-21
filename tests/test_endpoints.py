@@ -624,3 +624,14 @@ def test_atlassian_errors_use_atlassian_envelope(client):
     # non-atlassian paths keep FastAPI's default {"detail"} envelope
     r3 = client.get("/no-such-route")
     assert r3.status_code == 404 and "detail" in r3.json() and "message" not in r3.json()
+
+
+def test_confluence_single_space_get(client, admin_h):
+    spaces = client.get("/atlassian/wiki/rest/api/space", headers=admin_h).json()["results"]
+    assert spaces
+    key = spaces[0]["key"]
+    r = client.get(f"/atlassian/wiki/rest/api/space/{key}", headers=admin_h)
+    assert r.status_code == 200 and r.json()["key"] == key and r.json()["name"] == spaces[0]["name"]
+    # unknown space -> clean atlassian-shaped 404
+    r2 = client.get("/atlassian/wiki/rest/api/space/NOSUCH", headers=admin_h)
+    assert r2.status_code == 404 and "message" in r2.json()
