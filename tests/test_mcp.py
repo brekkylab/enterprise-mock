@@ -177,15 +177,15 @@ def test_mcp_s3_lists_objects(live_server):
 # ------------------------------------------------------ GitHub (generic OpenAPI→MCP bridge)
 
 def _bridge_params(source: str, base: str, token: str, username: str | None = None):
-    """Run examples/.../\_openapi_bridge.py as a stdio MCP server. Like the other cases this drives the
-    real artifact (here executed as a subprocess *by path* — not imported, no sys.path hack)."""
+    """Run the tests' own OpenAPI→MCP bridge (``tests/_openapi_bridge_probe.py``) as a stdio MCP
+    server — a self-contained copy of the example bridge, so the test suite never reaches into
+    ``examples/`` (see that file's header). Launched by path just like the docker/npx/uvx servers."""
     import sys
     from pathlib import Path
 
     from mcp import StdioServerParameters
 
-    bridge = str(Path(__file__).resolve().parents[1]
-                 / "examples" / "using-mcp-with-agents" / "_openapi_bridge.py")
+    bridge = str(Path(__file__).with_name("_openapi_bridge_probe.py"))
     args = [bridge, "--source", source, "--base-url", base.rstrip("/"), "--token", token]
     if username:
         args += ["--username", username]
