@@ -6,13 +6,15 @@ router's object builders directly (they take a row/conn, no live socket needed).
 from __future__ import annotations
 
 import json
+import urllib.request
 from datetime import datetime
+from xml.etree import ElementTree as ET
 
-import pytest
 from starlette.requests import Request
 
 from app import store
 from app.config import Settings
+from tests.test_endpoints import _sign_get
 
 
 def _epoch(iso):
@@ -299,3 +301,41 @@ def test_notion_user_and_block_shape(tmp_path):
     b = blocks[0]
     assert b["object"] == "block" and b["type"] == "heading_1"
     assert b["heading_1"]["rich_text"][0]["plain_text"] == "On-call"
+
+
+# --- S3 --------------------------------------------------------------------------
+
+NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
+
+
+def _get_xml(base_url, path, token):
+    url, headers = _sign_get(base_url, path, token)
+    with urllib.request.urlopen(urllib.request.Request(url, headers=headers)) as r:
+        return ET.fromstring(r.read())
+
+
+def test_list_buckets_xml_shape(live_server):
+    base_url, settings = live_server
+    root = _get_xml(base_url, "/s3/", settings.admin_token)
+    assert root.tag == f"{NS}ListAllMyBucketsResult"
+    assert root.find(f"{NS}Owner/{NS}ID") is not None
+    names = {b.findtext(f"{NS}Name") for b in root.iter(f"{NS}Bucket")}
+    assert "eng-artifacts" in names
+
+
+def test_list_objects_v2_xml_shape(live_server):
+    base_url, settings = live_server
+    root = _get_xml(base_url, "/s3/eng-artifacts?list-type=2", settings.admin_token)
+    assert root.tag == f"{NS}ListBucketResult"
+    assert root.findtext(f"{NS}Name") == "eng-artifacts"
+    assert root.findtext(f"{NS}IsTruncated") in ("true", "false")
+    c = next(root.iter(f"{NS}Contents"))
+    assert c.findtext(f"{NS}Key") and c.findtext(f"{NS}ETag").startswith('"')
+    assert c.findtext(f"{NS}LastModified").endswith("Z")
+
+
+def test_list_objects_v2_delimiter_common_prefixes(live_server):
+    base_url, settings = live_server
+    root = _get_xml(base_url, "/s3/eng-artifacts?list-type=2&delimiter=/", settings.admin_token)
+    prefixes = {cp.findtext(f"{NS}Prefix") for cp in root.iter(f"{NS}CommonPrefixes")}
+    assert {"runbooks/", "design/"} <= prefixes

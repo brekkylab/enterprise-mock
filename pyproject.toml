@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "enterprise-mock"
 version = "0.1.0"
-description = "Read-only mock server serving EnterpriseRAG-Bench data in the shape of real Slack/Gmail/Drive/GitHub/Jira/Confluence/Notion APIs"
+description = "Read-only mock server serving EnterpriseRAG-Bench data in the shape of real Slack/Gmail/Drive/GitHub/Jira/Confluence/Notion/S3 APIs"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -13,7 +13,7 @@ license-files = ["LICENSE"]
 authors = [
     { name = "khj809", email = "onsealeatang@gmail.com" },
 ]
-keywords = ["mock", "rag", "enterprise-search", "slack", "gmail", "google-drive", "jira", "confluence", "github", "notion", "benchmark"]
+keywords = ["mock", "rag", "enterprise-search", "slack", "gmail", "google-drive", "jira", "confluence", "github", "notion", "s3", "amazon-s3", "benchmark"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -48,6 +48,7 @@ examples = [
     "google-api-python-client>=2.120",
     "google-auth>=2.29",
     "notion-client>=3.1",
+    "boto3>=1.34",
 ]
 # Mirage examples (examples/using-mirage/): drive the mock through mirage's virtual filesystem.
 # The [fuse] extra (mfusepy) powers the optional `--fuse` real-OS-mount path; mounting also needs

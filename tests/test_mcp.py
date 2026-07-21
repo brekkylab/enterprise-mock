@@ -7,10 +7,15 @@ same tool, same object, different identity.
 - **Atlassian** (`mcp-atlassian`, Docker) — skipped unless Docker is available.
 - **Notion** (`@notionhq/notion-mcp-server`, npx) — skipped unless ``npx`` (Node) is on PATH; the
   first run downloads the npm package.
+- **S3** (`awslabs.aws-api-mcp-server`, uvx) — skipped unless ``uvx`` is on PATH; the first run
+  downloads the package. This one isn't an ACL test (it's a broad AWS-CLI wrapper, not read-one-
+  object-at-a-time like the others): it just proves the server, pointed at the mock via
+  ``AWS_ENDPOINT_URL``, lists a bucket's objects through a real signed AWS CLI call.
 
-Both require the ``mcp`` package. The stdio params below intentionally **duplicate** the wiring in
-``examples/using-mcp-with-agents/_servers.py`` rather than importing it — a test must not reach
-into ``examples/`` (no ``sys.path`` hacks); a little copied setup is the lesser evil.
+All require the ``mcp`` package. The stdio params below intentionally **duplicate** the wiring in
+the per-service example files (``examples/using-mcp-with-agents/{atlassian,notion,s3}.py``) rather
+than importing them — a test must not reach into ``examples/`` (no ``sys.path`` hacks); a little
+copied setup is the lesser evil.
 """
 from __future__ import annotations
 
@@ -37,7 +42,7 @@ def _docker_available() -> bool:
 
 
 def _atlassian_params(base: str, token: str):
-    """`docker run` args pointing mcp-atlassian at a local mock (see examples/.../_servers.py).
+    """`docker run` args pointing mcp-atlassian at a local mock (see examples/.../atlassian.py).
 
     mcp-atlassian only classifies a host as Atlassian *Cloud* when it ends in `.atlassian.net`, so
     use a fake `mock.atlassian.net` mapped to the host via `--add-host`, and Basic auth where the
@@ -135,3 +140,35 @@ def test_mcp_notion_acl_enforced(live_server):
 
     assert reads(settings.admin_token), "admin should read the page through notion-mcp-server"
     assert not reads(user["token"]), f"{email} should be blocked from the page via notion-mcp-server"
+
+
+# --------------------------------------------------------------------------- S3
+
+def _s3_params(base: str, token: str):
+    """`uvx` args pointing the awslabs aws-api MCP server at the mock via AWS_ENDPOINT_URL (see
+    examples/.../s3.py). The server shells the AWS CLI, whose boto3 client SigV4-signs each call;
+    the mock verifies the signature against the access-key/secret derived from ``token`` (the same
+    pair GET /_mock/users exposes)."""
+    from mcp import StdioServerParameters
+
+    return StdioServerParameters(
+        command="uvx", args=["awslabs.aws-api-mcp-server@latest"],
+        env={"AWS_ENDPOINT_URL": f"{base.rstrip('/')}/s3",
+             "AWS_ACCESS_KEY_ID": synth.s3_access_key_id(token),
+             "AWS_SECRET_ACCESS_KEY": synth.s3_secret_access_key(token),
+             "AWS_REGION": "us-east-1", "READ_OPERATIONS_ONLY": "true"})
+
+
+@pytest.mark.skipif(shutil.which("uvx") is None, reason="uvx not installed")
+def test_mcp_s3_lists_objects(live_server):
+    """The awslabs aws-api MCP server, pointed at the mock, lists objects via a signed AWS CLI call."""
+    base, settings = live_server
+    params = _s3_params(base, settings.admin_token)
+    out = asyncio.run(_call(
+        params,
+        # the server also exposes a "suggest_aws_commands" tool; pick the one that runs a command.
+        tool_pred=lambda name: name == "call_aws",
+        args={"cli_command": f"aws s3api list-objects-v2 --bucket eng-artifacts "
+                             f"--endpoint-url {base}/s3"},
+        ok_pred=lambda text: "runbooks/oncall.md" in text))
+    assert out, "expected the SAMPLE eng-artifacts/runbooks/oncall.md key in the listing"

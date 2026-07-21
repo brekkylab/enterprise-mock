@@ -386,6 +386,22 @@ async def confluence_space_permission(key: str, request: Request):
     return {"results": perms}
 
 
+@router.get("/wiki/rest/api/space/{key}")
+async def confluence_space_get(key: str, request: Request):
+    """Single-space fetch (atlassian-python-api's ``get_space`` / mcp-atlassian result enrichment).
+    404s (Atlassian-shaped) for an unknown key."""
+    conn = auth.conn(request)
+    _require(request)
+    container = _space_container_for_key(conn, key)
+    if container is None:
+        raise HTTPException(status_code=404, detail="No space with the given key exists")
+    space = {"id": synth.github_user_id(container), "key": key, "name": container,
+             "type": "global", "status": "current", "_links": {"webui": f"/spaces/{key}"}}
+    if "description" in request.query_params.get("expand", ""):
+        space["description"] = {"plain": {"value": f"{container} space", "representation": "plain"}}
+    return space
+
+
 @router.get("/wiki/rest/api/search")
 async def confluence_cql_search(request: Request):
     """CQL search used by Confluence clients (e.g. mcp-atlassian). We parse the

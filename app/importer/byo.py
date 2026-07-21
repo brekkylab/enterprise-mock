@@ -157,6 +157,10 @@ def _service_columns(src, ex, subtype, parent_id, doc_id, thread_id, seq, org_do
         return {"subtype": subtype or "page", "parent_id": parent_id,
                 "properties": _j(ex.get("properties")), "icon": ex.get("icon"),
                 "cover": ex.get("cover"), "created_ts": created, "updated_ts": updated}
+    if src == "s3":
+        return {"key": ex.get("key"), "subtype": subtype or "STANDARD",
+                "content_type": ex.get("content_type") or "text/plain",
+                "size": ex.get("size"), "created_ts": created, "updated_ts": updated}
     return {}
 
 
@@ -253,9 +257,11 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
             grant_types = []
             for pid in readers:
                 if "@" in pid:
-                    grant_types.append(("user", pid)); users.setdefault(pid, _display_name(pid))
+                    grant_types.append(("user", pid))
+                    users.setdefault(pid, _display_name(pid))
                 else:
-                    grant_types.append(("group", pid)); groups.add(pid)
+                    grant_types.append(("group", pid))
+                    groups.add(pid)
         elif vis == "private" and author:
             grant_types = [("user", author)]
         elif vis == "group":
@@ -272,7 +278,8 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
                   "label_ids", "thread", "html", "closed_at", "closed_by", "merged_by", "milestone",
                   "requested_reviewers", "resolution", "resolutiondate", "duedate",
                   "fix_versions", "versions", "assignee", "reporter", "minor_edit",
-                  "version_message", "version_number", "properties", "icon", "cover"):
+                  "version_message", "version_number", "properties", "icon", "cover",
+                  "key", "content_type", "size"):
             if k in rec:
                 extras[k] = rec[k]
         subtype = rec.get("subtype")
@@ -293,6 +300,8 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
                                     org_domain, cts, uts)
             cols.update(doc_id=did, author_email=email or f"unknown@{org_domain}",
                         title=ttl, content=body)
+            if src == "s3" and cols.get("size") is None:
+                cols["size"] = len((body or "").encode("utf-8"))
             cols[gcol] = container
             names = list(cols)
             conn.execute(

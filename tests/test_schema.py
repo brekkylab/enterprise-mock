@@ -90,3 +90,11 @@ def test_schema_files_are_valid_json_schemas():
     for src, schema in validation.SERVICE_SCHEMAS.items():
         Draft202012Validator.check_schema(schema)
         assert schema["properties"]["source_type"]["const"] == src
+
+
+def test_s3_schema_registered():
+    from app.validation import record_errors
+    assert record_errors({"source_type": "s3", "bucket": "b", "key": "k",
+                          "title": "t", "content": "c"}) == []
+    errs = record_errors({"source_type": "s3", "bucket": "b", "title": "t", "content": "c"})
+    assert errs and any("key" in e for e in errs)

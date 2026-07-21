@@ -9,9 +9,11 @@ The only change from talking to real Notion is ``base_url`` — point it at the 
 prefix (the SDK appends ``/v1/`` itself). The mock defaults to the ``2025-09-03`` API version, so
 a database exposes a *data source* you query for its rows.
 """
+import argparse
+
 from notion_client import Client
 
-from _mockserver import cli_token, serve_or_connect
+from _mockserver import serve_or_connect
 
 CORPUS = [
     {"source_type": "notion", "teamspace": "engineering", "title": "On-call Runbook",
@@ -27,9 +29,16 @@ CORPUS = [
 # give the database a stable doc_id so the row above can parent to it
 CORPUS[1]["doc_id"] = "eng-tasks-db"
 
-with serve_or_connect(CORPUS) as mock:
-    # --token <usr-token> (from /_mock/users) → ACL-filtered to that user; else admin sees all
-    notion = Client(auth=cli_token(mock.token), base_url=f"{mock.base_url}/notion")
+_p = argparse.ArgumentParser(description="Read Notion through the official notion-client SDK against the mock.")
+_p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+_p.add_argument("--token", help="mock bearer token from GET /_mock/users "
+                                "(default: the admin token, which sees everything)")
+args = _p.parse_args()
+
+with serve_or_connect(CORPUS, url=args.url) as mock:
+    if args.token:
+        print("authenticating with --token → responses are ACL-filtered to that user")
+    notion = Client(auth=args.token or mock.token, base_url=f"{mock.base_url}/notion")
 
     results = notion.search(query="on-call")["results"]
     print(f"search 'on-call' → {len(results)} result(s)")

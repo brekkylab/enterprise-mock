@@ -6,8 +6,10 @@ Self-contained.
     pip install -e ".[examples]"
     python examples/using-official-sdk/gdrive.py                          # bare SA → admin, sees all
     python examples/using-official-sdk/gdrive.py --user mia@acme.com      # impersonate a user (ACL)
-    python examples/using-official-sdk/gdrive.py --url http://localhost:8000 [--user <email>]
+    python examples/using-official-sdk/gdrive.py --url http://localhost:8000 --user <email>
 """
+import argparse
+
 from google.api_core.client_options import ClientOptions
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -26,10 +28,15 @@ CORPUS = [
      "author_email": "mia@acme.com"},
 ]
 
-with serve_or_connect(CORPUS) as mock:
+_p = argparse.ArgumentParser(description="Read Google Drive through google-api-python-client against the mock.")
+_p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+_p.add_argument("--user", help="email to impersonate via the service account (default: bare service account = admin, sees everything)")
+args = _p.parse_args()
+
+with serve_or_connect(CORPUS, url=args.url) as mock:
     # Auth is an ordinary Google service-account credential; only the api_endpoint changes. The
     # mock issues the key and honors the JWT exchange it triggers.
-    sa_info, subject = google_service_account_info(mock.base_url)  # stands in for the JSON key file
+    sa_info, subject = google_service_account_info(mock.base_url, args.user)  # stands in for the JSON key file
     creds = service_account.Credentials.from_service_account_info(
         sa_info, scopes=["https://www.googleapis.com/auth/drive.readonly"], subject=subject)
     gdrive = build("drive", "v3", credentials=creds, static_discovery=True,

@@ -5,21 +5,26 @@ indexes (issue number / Jira key / Confluence id -> doc_id) for O(1) get-by-id.
 """
 from __future__ import annotations
 
+import http
 import threading
 from contextlib import asynccontextmanager
 
 import yaml
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import store, synth
 from app.acl import Acl
 from app.config import get_settings
 from app.oauth import Oauth
-from app.routers import atlassian, github, google, notion, oauth, slack
+from app.routers import atlassian, github, google, notion, oauth, s3, slack
 
 
 def _build_index(conn) -> dict:
-    idx = {"github": {}, "jira": {}, "confluence": {}, "notion": {}}
+    idx = {"github": {}, "jira": {}, "confluence": {}, "notion": {}, "s3": {}}
     for r in conn.execute(f"SELECT doc_id, {store.grouping_col('github')} AS container FROM {store.table('github')}"):
         idx["github"][(r["container"], synth.github_number(r["doc_id"]))] = r["doc_id"]
     for r in conn.execute(f"SELECT doc_id, {store.grouping_col('jira')} AS container FROM {store.table('jira')}"):
@@ -30,6 +35,8 @@ def _build_index(conn) -> dict:
     # dashed or dashless (both valid to real Notion) resolves — see routers.notion._norm.
     for r in conn.execute(f"SELECT doc_id FROM {store.table('notion')}"):
         idx["notion"][synth.notion_id(r["doc_id"]).replace("-", "")] = r["doc_id"]
+    for r in conn.execute(f"SELECT doc_id, bucket, key FROM {store.table('s3')}"):
+        idx["s3"][f"{r['bucket']}/{r['key']}"] = r["doc_id"]
     return idx
 
 
@@ -92,6 +99,40 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="EnterpriseRAG-Bench Mock Server", lifespan=lifespan)
 
 
+# Atlassian clients (atlassian-python-api, used by mcp-atlassian) parse error bodies as Atlassian
+# Cloud's envelope — Confluence's raise_for_status does ``response.json()["message"]`` — so
+# FastAPI's default ``{"detail": ...}`` makes every error a cryptic ``KeyError: 'message'`` in the
+# client. For ``/atlassian`` paths, shape errors like Atlassian (message + statusCode, plus Jira's
+# errorMessages); every other prefix keeps FastAPI's default body.
+
+def _atlassian_error_body(status_code: int, detail) -> dict:
+    try:
+        reason = http.HTTPStatus(status_code).phrase
+    except ValueError:
+        reason = "Error"
+    message = detail if isinstance(detail, str) else str(detail)
+    return {"statusCode": status_code, "message": message, "reason": reason,
+            "errorMessages": [message], "errors": {}}
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _http_exception_handler(request: Request, exc: StarletteHTTPException):
+    headers = getattr(exc, "headers", None)
+    if request.url.path.startswith("/atlassian"):
+        return JSONResponse(status_code=exc.status_code,
+                            content=_atlassian_error_body(exc.status_code, exc.detail),
+                            headers=headers)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=headers)
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_exception_handler(request: Request, exc: RequestValidationError):
+    if request.url.path.startswith("/atlassian"):
+        msg = "; ".join(e.get("msg", "invalid request") for e in exc.errors()) or "Invalid request"
+        return JSONResponse(status_code=422, content=_atlassian_error_body(422, msg))
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(exc.errors())})
+
+
 @app.middleware("http")
 async def parse_slack_form(request: Request, call_next):
     """Slack SDK POSTs urlencoded params; stash them for the router's param lookup."""
@@ -123,7 +164,10 @@ async def mock_users():
 
     Not part of any emulated vendor API — a mock-only affordance. Present each user's
     token in the same shape as ``data/tokens.yaml`` plus the groups they belong to, so a
-    caller can pick a token, send it to any of the six APIs, and see the ACL-filtered view.
+    caller can pick a token, send it to any of the APIs, and see the ACL-filtered view.
+    S3 doesn't use bearer tokens — it uses AWS SigV4 — so each user (and the admin) also
+    carries an ``s3_access_key_id`` / ``s3_secret_access_key`` pair (derived from the token,
+    which is what the SigV4 verifier resolves) to hand straight to boto3 / the AWS CLI.
     Disable with ``MOCK_EXPOSE_TOKENS=false``. The admin/service token bypasses all filtering.
     """
     settings = get_settings()
@@ -137,11 +181,15 @@ async def mock_users():
     # documents, but aren't identities you can pick a token for here.
     users = [
         {"email": u["email"], "name": u["display_name"], "token": tok[u["email"]],
+         "s3_access_key_id": synth.s3_access_key_id(tok[u["email"]]),
+         "s3_secret_access_key": synth.s3_secret_access_key(tok[u["email"]]),
          "groups": store.user_group_ids(conn, u["email"])}
         for u in store.list_users(conn)
         if u["email"] in tok
     ]
     return {"org": acl.org_name, "admin_token": acl.admin_token,
+            "admin_s3_access_key_id": synth.s3_access_key_id(acl.admin_token),
+            "admin_s3_secret_access_key": synth.s3_secret_access_key(acl.admin_token),
             "count": len(users), "users": users}
 
 
@@ -176,3 +224,4 @@ app.include_router(google.router)
 app.include_router(github.router)
 app.include_router(atlassian.router)
 app.include_router(notion.router)
+app.include_router(s3.router)

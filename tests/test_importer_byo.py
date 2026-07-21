@@ -264,3 +264,41 @@ def test_notion_byo_rejects_bad_subtype():
     errs = record_errors({"source_type": "notion", "title": "x", "content": "y",
                           "subtype": "wiki"})
     assert any("subtype" in e for e in errs)
+
+
+def test_s3_byo_load(tmp_path):
+    unicode_body = "résumé ☕ dashboards"  # multibyte: size is the UTF-8 byte length, not char count
+    records = [
+        {"source_type": "s3", "bucket": "eng-artifacts", "key": "runbooks/oncall.md",
+         "title": "On-call Runbook", "content": "check dashboards, roll back, page on-call",
+         "content_type": "text/markdown", "author_email": "ava@acme.com",
+         "author_groups": ["engineering"], "visibility": "public"},
+        {"source_type": "s3", "bucket": "eng-artifacts", "key": "secret/comp.txt",
+         "title": "Comp", "content": "confidential", "author_email": "hana@acme.com",
+         "author_groups": ["people"], "visibility": "group", "group": "people"},
+        {"source_type": "s3", "bucket": "eng-artifacts", "key": "notes/unicode.md",
+         "title": "Unicode", "content": unicode_body, "content_type": "text/markdown",
+         "author_email": "ava@acme.com", "author_groups": ["engineering"], "visibility": "public"},
+    ]
+    corpus = tmp_path / "s3.jsonl"
+    corpus.write_text("\n".join(json.dumps(r) for r in records))
+    settings = Settings(data_dir=tmp_path)
+    res = load(corpus, settings)
+    assert res["counts"]["s3"] == 3
+    conn = store.connect_ro(settings.db_path)
+    rows = {r["key"]: r for r in store.list_documents(conn, "s3", container="eng-artifacts")}
+    assert rows["runbooks/oncall.md"]["content_type"] == "text/markdown"
+    assert rows["runbooks/oncall.md"]["size"] == len("check dashboards, roll back, page on-call")
+    # size is the UTF-8 byte length, which is strictly greater than the character count here
+    assert rows["notes/unicode.md"]["size"] == len(unicode_body.encode("utf-8"))
+    assert rows["notes/unicode.md"]["size"] != len(unicode_body)
+    assert store.get_container(conn, "s3", "eng-artifacts") is not None
+    conn.close()
+
+
+def test_s3_byo_rejects_missing_key(tmp_path):
+    corpus = tmp_path / "bad.jsonl"
+    corpus.write_text(json.dumps(
+        {"source_type": "s3", "bucket": "b", "title": "t", "content": "c"}))  # no key
+    with pytest.raises(SystemExit):
+        load(corpus, Settings(data_dir=tmp_path))

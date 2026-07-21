@@ -46,38 +46,6 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-# ------------------------------------------------------------------ CLI parsing
-# One place for `--flag value` / `--flag=value` parsing shared by the mock runner, the server
-# registry, and the agent scripts.
-
-def cli_arg(name: str, argv: list[str] | None = None) -> str | None:
-    """The value of ``--name value`` / ``--name=value`` on the command line (or None)."""
-    argv = sys.argv[1:] if argv is None else argv
-    flag = f"--{name}"
-    for i, a in enumerate(argv):
-        if a == flag and i + 1 < len(argv):
-            return argv[i + 1]
-        if a.startswith(flag + "="):
-            return a.split("=", 1)[1]
-    return None
-
-
-def cli_token(default: str | None = TOKEN) -> str | None:
-    """``--token`` if given (→ ACL-filtered to that user), else ``default`` (the admin token).
-
-    Grab a per-user token from ``GET /_mock/users`` on a running server and pair it with ``--url``
-    to scope retrieval to that user."""
-    t = cli_arg("token")
-    if t:
-        print("authenticating with --token → retrieval is ACL-filtered to that user")
-    return t or default
-
-
-def cli_username(default: str | None = None) -> str | None:
-    """``--username`` if given, else ``default`` (Atlassian Basic-auth identity; see _servers)."""
-    return cli_arg("username") or default
-
-
 def _healthy(url: str) -> bool:
     # generous timeout: a remote deployment may be a trans-continental HTTPS hop
     try:
@@ -89,8 +57,8 @@ def _healthy(url: str) -> bool:
 
 @contextlib.contextmanager
 def serve_or_connect(records: list[dict], url: str | None = None):
-    """Use a ``--url`` mock if reachable; otherwise spin up a local one on ``records``."""
-    url = (url or cli_arg("url") or "").strip()
+    """Use the given ``url`` mock if reachable; otherwise spin up a local one on ``records``."""
+    url = (url or "").strip()
     if url and _healthy(url):
         print(f"using mock server at {url}")
         yield types.SimpleNamespace(base_url=url.rstrip("/"), token=TOKEN, data_dir=None)

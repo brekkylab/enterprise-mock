@@ -8,10 +8,13 @@ principal set. Error *shaping* (Slack's ``ok:false`` vs a real 401) stays in the
 from __future__ import annotations
 
 import base64
+import hmac
 import sqlite3
+from datetime import datetime, timezone
 
 from fastapi import Request
 
+from app import sigv4
 from app.acl import Acl, Caller
 
 
@@ -84,3 +87,65 @@ def resolve_basic(request: Request) -> Caller | None:
 
 def visible_ids(request: Request, caller: Caller) -> set[str] | None:
     return acl(request).visible_ids(conn(request), caller)
+
+
+def resolve_sigv4(request: Request) -> tuple[Caller | None, str | None]:
+    """Verify an S3 SigV4 request (header or presigned-query auth).
+
+    Returns ``(caller, None)`` on a valid signature, else ``(None, <S3 error code>)`` — one of
+    ``MissingSecurityHeader`` / ``AuthorizationHeaderMalformed`` / ``InvalidAccessKeyId`` /
+    ``RequestTimeTooSkewed`` / ``AccessDenied`` / ``SignatureDoesNotMatch``. Real S3's check
+    order is parse -> resolve access key -> time validity -> signature match, so a bogus access
+    key is reported before any time error, and a stale-but-correctly-signed request is reported
+    as a time error rather than a signature mismatch. The region is taken from the client's own
+    credential scope, so any region validates. The canonical URI is the raw wire path (S3 signs
+    it verbatim)."""
+    hdrs = {k.lower(): v for k, v in request.headers.items()}
+    qs = request.query_params
+    authz = hdrs.get("authorization", "")
+    presigned = False
+    if authz.startswith(sigv4.ALGORITHM):
+        parsed = sigv4.parse_authorization(authz)
+        if not parsed:
+            return None, "AuthorizationHeaderMalformed"
+        cred = sigv4.split_credential(parsed["credential"])
+        signed_headers, signature = parsed["signed_headers"], parsed["signature"]
+        amz_date = hdrs.get("x-amz-date", "")
+        payload_hash = hdrs.get("x-amz-content-sha256", "UNSIGNED-PAYLOAD")
+    elif qs.get("X-Amz-Signature"):
+        presigned = True
+        cred = sigv4.split_credential(qs.get("X-Amz-Credential", ""))
+        signed_headers = qs.get("X-Amz-SignedHeaders", "host")
+        signature = qs["X-Amz-Signature"]
+        amz_date = qs.get("X-Amz-Date", "")
+        payload_hash = "UNSIGNED-PAYLOAD"
+    else:
+        return None, "MissingSecurityHeader"
+    if not cred:
+        return None, "AuthorizationHeaderMalformed"
+    access_key, date_stamp, region = cred
+    resolved = acl(request).resolve_access_key(access_key)
+    if resolved is None:
+        return None, "InvalidAccessKeyId"
+    caller, secret = resolved
+    request_time = sigv4.parse_amz_date(amz_date)
+    if request_time is None:
+        return None, "AuthorizationHeaderMalformed"
+    now = datetime.now(timezone.utc)
+    if presigned:
+        try:
+            expires_in = int(qs.get("X-Amz-Expires", ""))
+        except ValueError:
+            return None, "AuthorizationHeaderMalformed"
+        if (now - request_time).total_seconds() > expires_in:
+            return None, "AccessDenied"
+    elif sigv4.is_skewed(request_time, now):
+        return None, "RequestTimeTooSkewed"
+    raw = request.scope.get("raw_path")
+    path = raw.decode("ascii") if raw else request.url.path
+    expected = sigv4.expected_signature(
+        secret, request.method, path, request.url.query, hdrs, signed_headers,
+        payload_hash, amz_date, date_stamp, region)
+    if not hmac.compare_digest(expected, signature):
+        return None, "SignatureDoesNotMatch"
+    return caller, None

@@ -131,6 +131,19 @@ SAMPLE = [
     {"source_type": "notion", "doc_id": "nt-secret", "teamspace": "people-ops",
      "group": "people", "title": "Comp planning notes", "content": "Confidential.",
      "author_email": "hana@acme.com", "author_groups": ["people"], "visibility": "group"},
+
+    {"source_type": "s3", "doc_id": "s3-runbook", "bucket": "eng-artifacts",
+     "group": "engineering", "key": "runbooks/oncall.md", "title": "On-call Runbook",
+     "content": "Check dashboards, roll back, page on-call.", "content_type": "text/markdown",
+     "author_email": "ava@acme.com", "author_groups": ["engineering"], "visibility": "public"},
+    {"source_type": "s3", "doc_id": "s3-arch", "bucket": "eng-artifacts",
+     "group": "engineering", "key": "design/architecture.md", "title": "Architecture",
+     "content": "Gateway, workers, and the token bucket.", "content_type": "text/markdown",
+     "author_email": "bob@acme.com", "author_groups": ["engineering"], "visibility": "public"},
+    {"source_type": "s3", "doc_id": "s3-secret", "bucket": "people-vault", "group": "people",
+     "key": "comp/bands.csv", "title": "Comp Bands", "content": "band,min,max\nL5,180,220",
+     "content_type": "text/csv", "author_email": "hana@acme.com", "author_groups": ["people"],
+     "visibility": "group"},
 ]
 
 

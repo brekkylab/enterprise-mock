@@ -6,7 +6,7 @@ The only change from talking to the real service is the base URL.
 
 ```bash
 pip install -e ".[examples]"
-python examples/using-official-sdk/slack.py     # or gmail.py, gdrive.py, github.py, jira.py, confluence.py, notion.py
+python examples/using-official-sdk/slack.py     # or gmail.py, gdrive.py, github.py, jira.py, confluence.py, notion.py, s3.py
 ```
 
 Pass `--url http://host:port` to point a script at an already-running mock instead; if it's
@@ -14,26 +14,31 @@ omitted or unreachable, the script falls back to spinning up its own.
 
 ### Testing per-user ACL
 
-To see a **specific user's ACL-filtered view**, pass `--user <email>` (Google) or a token
-(others):
+To see a **specific user's ACL-filtered view**, each example takes the credential its service
+uses — a token, Google `--user`, Atlassian Basic auth, or an S3 keypair:
 
 ```bash
 # Google: gmail.py (authorized_user) & gdrive.py (service account) both take --user <email>
 python examples/using-official-sdk/gmail.py --url http://localhost:8000 --user ava@acme.com
 
-# bearer-token services: slack.py, github.py — grab a token from GET /_mock/users and pass it:
+# bearer-token services: slack.py, github.py, notion.py — grab a token from GET /_mock/users:
 python examples/using-official-sdk/github.py --url http://localhost:8000 --token <usr-token>
 
 # Atlassian Basic auth: jira.py, confluence.py take --username and --password
 python examples/using-official-sdk/jira.py --url http://localhost:8000 \
     --username ava@acme.com --password <usr-token>
+
+# S3: boto3 SigV4 uses an AWS keypair (required with --url; grab a pair from GET /_mock/users)
+python examples/using-official-sdk/s3.py --url http://localhost:8000 \
+    --access-key <AKIA...> --secret-key <secret>
 ```
 
-The response then contains only what that identity is allowed to read. Grab tokens/emails from
-the running server's [`GET /_mock/users`](../../README.md#auth--tokens) directory. For
-Jira/Confluence either `--password <token>` or `--username <email>` alone identifies the user
+The response then contains only what that identity is allowed to read. Grab tokens / emails /
+S3 keypairs from the running server's [`GET /_mock/users`](../../README.md#auth--tokens) directory.
+For Jira/Confluence either `--password <token>` or `--username <email>` alone identifies the user
 (the mock resolves by the api token, falling back to the username email). Pair
-`--user`/`--token`/`--password` with `--url` so the identity exists on the server you're querying.
+`--user`/`--token`/`--password`/`--access-key`+`--secret-key` with `--url` so the identity exists
+on the server you're querying. (Each example declares its own options — see `python <file> --help`.)
 
 ### How Google auth works here
 
@@ -61,6 +66,7 @@ library's own token exchange runs against the mock's `POST /oauth2/token` in bot
 | Gmail | `google-api-python-client` | `build("gmail","v1", …, client_options=ClientOptions(api_endpoint="http://localhost:8000"))` |
 | Drive | `google-api-python-client` | `build("drive","v3", …, client_options=ClientOptions(api_endpoint="http://localhost:8000/drive/v3"))` |
 | Notion | `notion-client` | `Client(auth=T, base_url="http://localhost:8000/notion")` (SDK appends `/v1/`) |
+| S3 | `boto3` | `client("s3", endpoint_url="http://localhost:8000/s3", config=Config(s3={"addressing_style":"path"}))` |
 
 (`T` is a token from `data/tokens.yaml` — the admin token sees everything; a per-user token is
 scoped to that user's ACL. For Google, credentials come from a service account issued by

@@ -266,13 +266,21 @@ def test_user_sees_subset_of_admin(client, admin_h, tokens, ro_conn, sample_sett
 
 def test_mock_users_directory(client, tokens, org):
     # the /_mock/users directory lists every user + token (for testing per-user ACL)
+    from app import synth
     body = client.get("/_mock/users").json()
     assert body["admin_token"] == tokens["admin_token"]
+    # S3 uses an AWS keypair, not a token — the directory exposes an admin pair (derived from the
+    # admin token, which is what the SigV4 verifier resolves) so a client can use it directly
+    assert body["admin_s3_access_key_id"] == synth.s3_access_key_id(body["admin_token"])
+    assert body["admin_s3_secret_access_key"] == synth.s3_secret_access_key(body["admin_token"])
     yaml_by_email = {u["email"]: u["token"] for u in tokens["users"]}
     assert body["count"] == len(body["users"]) == len(yaml_by_email) > 0
     for u in body["users"]:
         assert u["token"] == yaml_by_email[u["email"]]  # matches data/tokens.yaml
         assert u["name"] and isinstance(u["groups"], list)
+        # each user also carries their derived S3 access-key/secret pair
+        assert u["s3_access_key_id"] == synth.s3_access_key_id(u["token"])
+        assert u["s3_secret_access_key"] == synth.s3_secret_access_key(u["token"])
     # a listed token really is ACL-scoped: it resolves and sees <= what admin sees
     u = body["users"][0]
     admin_repos = client.get(f"/github/orgs/{org}/repos",
@@ -525,3 +533,105 @@ def test_notion_data_source_retrieve(client, admin_h):
     dsid = synth.notion_data_source_id("nt-tasks-db")
     ds = client.get(f"/notion/v1/data_sources/{dsid}", headers=admin_h).json()
     assert ds["object"] == "data_source" and "Status" in ds["properties"]
+
+
+# ------------------------------------------------------------------------ S3 (SigV4/404/416 edges)
+
+def _sign_get(base_url, path, token, *, tamper=False, extra_headers=None):
+    """Return (url, headers) for a SigV4-signed GET, using botocore (the real signer)."""
+    pytest.importorskip("botocore")
+    from botocore.auth import S3SigV4Auth
+    from botocore.awsrequest import AWSRequest
+    from botocore.credentials import Credentials
+    from urllib.parse import parse_qsl, quote, urlencode
+    from app import synth
+
+    # URL-encode the path: split on ? to preserve the path part, then properly encode query params.
+    # Use quote_via=quote (not the default quote_plus) so a space becomes %20, matching the server's
+    # canonicalization (app.sigv4._canonical_query uses quote); quote_plus would emit '+' and mismatch.
+    if "?" in path:
+        path_part, query_part = path.split("?", 1)
+        params = parse_qsl(query_part, keep_blank_values=True)
+        query_part = urlencode(params, safe="-_.~", quote_via=quote)
+        path = f"{path_part}?{query_part}"
+
+    ak = synth.s3_access_key_id(token)
+    sk = synth.s3_secret_access_key(token)
+    url = f"{base_url}{path}"
+    req = AWSRequest(method="GET", url=url, headers=dict(extra_headers or {}))
+    req.headers["x-amz-content-sha256"] = "UNSIGNED-PAYLOAD"
+    S3SigV4Auth(Credentials(ak, sk), "s3", "us-east-1").add_auth(req)
+    headers = dict(req.headers)
+    if tamper:
+        headers["Authorization"] = headers["Authorization"][:-4] + "dead"
+    return url, headers
+
+
+def test_s3_unknown_access_key_rejected(live_server):
+    import urllib.request
+    base_url, settings = live_server
+    url = f"{base_url}/s3/eng-artifacts?list-type=2"
+    req = urllib.request.Request(url, headers={
+        "Authorization": ("AWS4-HMAC-SHA256 Credential=AKIABOGUS0000000BOGUS/"
+                          "20260720/us-east-1/s3/aws4_request, "
+                          "SignedHeaders=host, Signature=00"),
+        "x-amz-date": "20260720T000000Z"})
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(req)
+    assert e.value.code == 403 and b"InvalidAccessKeyId" in e.value.read()
+
+
+def test_s3_tampered_signature_rejected(live_server):
+    import urllib.request
+    base_url, settings = live_server
+    url, headers = _sign_get(base_url, "/s3/eng-artifacts?list-type=2",
+                             settings.admin_token, tamper=True)
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(urllib.request.Request(url, headers=headers))
+    assert e.value.code == 403 and b"SignatureDoesNotMatch" in e.value.read()
+
+
+def test_s3_missing_key_is_nosuchkey(live_server):
+    import urllib.request
+    base_url, settings = live_server
+    url, headers = _sign_get(base_url, "/s3/eng-artifacts/does/not/exist.md", settings.admin_token)
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(urllib.request.Request(url, headers=headers))
+    assert e.value.code == 404 and b"NoSuchKey" in e.value.read()
+
+
+def test_s3_unsatisfiable_range_is_416(live_server):
+    import urllib.request
+    base_url, settings = live_server
+    url, headers = _sign_get(base_url, "/s3/eng-artifacts/runbooks/oncall.md",
+                             settings.admin_token, extra_headers={"Range": "bytes=99999-100000"})
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(urllib.request.Request(url, headers=headers))
+    assert e.value.code == 416 and b"InvalidRange" in e.value.read()
+    total = len("Check dashboards, roll back, page on-call.")
+    assert e.value.headers.get("Content-Range") == f"bytes */{total}"
+    assert e.value.headers.get("Content-Type") == "application/xml"
+
+
+def test_atlassian_errors_use_atlassian_envelope(client):
+    # atlassian-python-api's Confluence client does response.json()["message"] on any error, so the
+    # mock must shape /atlassian errors like Atlassian Cloud (message + statusCode), not {"detail"}.
+    r = client.get("/atlassian/wiki/rest/api/content/999999")   # unauthenticated -> 401
+    assert r.status_code == 401
+    assert r.json().get("message") and r.json().get("statusCode") == 401
+    r2 = client.get("/atlassian/wiki/rest/api/content/search")  # 'search' fails int path validation -> 422
+    assert r2.status_code == 422 and "message" in r2.json()
+    # non-atlassian paths keep FastAPI's default {"detail"} envelope
+    r3 = client.get("/no-such-route")
+    assert r3.status_code == 404 and "detail" in r3.json() and "message" not in r3.json()
+
+
+def test_confluence_single_space_get(client, admin_h):
+    spaces = client.get("/atlassian/wiki/rest/api/space", headers=admin_h).json()["results"]
+    assert spaces
+    key = spaces[0]["key"]
+    r = client.get(f"/atlassian/wiki/rest/api/space/{key}", headers=admin_h)
+    assert r.status_code == 200 and r.json()["key"] == key and r.json()["name"] == spaces[0]["name"]
+    # unknown space -> clean atlassian-shaped 404
+    r2 = client.get("/atlassian/wiki/rest/api/space/NOSUCH", headers=admin_h)
+    assert r2.status_code == 404 and "message" in r2.json()

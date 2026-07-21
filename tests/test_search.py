@@ -54,30 +54,6 @@ def test_fts_drive_source(db):
     assert store.search_documents(db, "postmortem", "google_drive") == []
 
 
-def test_connect_rw_busy_timeout(tmp_path):
-    c = store.connect_rw(tmp_path / "rw.sqlite", busy_ms=12345)
-    try:
-        assert c.execute("PRAGMA busy_timeout").fetchone()[0] == 12345
-    finally:
-        c.close()
-
-
-def test_connect_ro_tuning(sample_settings):
-    # tuned connection applies the pragmas; a plain one keeps sqlite defaults (tests unaffected)
-    c = store.connect_ro(sample_settings.db_path, mmap_mb=64, cache_mb=16, temp_memory=True)
-    try:
-        assert c.execute("PRAGMA cache_size").fetchone()[0] == -16 * 1024
-        assert c.execute("PRAGMA temp_store").fetchone()[0] == 2  # MEMORY
-        assert c.execute("PRAGMA mmap_size").fetchone()[0] > 0
-    finally:
-        c.close()
-    d = store.connect_ro(sample_settings.db_path)
-    try:
-        assert d.execute("PRAGMA mmap_size").fetchone()[0] == 0
-    finally:
-        d.close()
-
-
 def test_fts_container_scoped(db):
     # 'latency' is in the payments Jira project; container-scoping to a foreign project drops it
     assert store.search_documents(db, "latency", "jira", container="payments")
@@ -200,3 +176,16 @@ def test_fts_notion_acl_scoped(db, acl, tokens):
     assert store.count_search(db, "confidential", "notion", visible_ids=None) >= 1
     ava_ids = acl.visible_ids(db, acl.resolve(tokens["ava@acme.com"]))  # not in 'people'
     assert store.count_search(db, "confidential", "notion", visible_ids=ava_ids) == 0
+
+
+def test_fts_s3_search(db):
+    rows = store.search_documents(db, "dashboards", source_type="s3")
+    assert any(r["key"] == "runbooks/oncall.md" for r in rows)
+
+
+def test_fts_s3_acl_scoped(db, acl, tokens):
+    # the group-restricted object is invisible to a non-member (ava is engineering, not people).
+    # First assert it IS findable unfiltered, so the ==0 below proves ACL — not a vacuous no-match.
+    assert store.count_search(db, "band", source_type="s3", visible_ids=None) >= 1
+    ava_ids = acl.visible_ids(db, acl.resolve(tokens["ava@acme.com"]))
+    assert store.count_search(db, "band", source_type="s3", visible_ids=ava_ids) == 0

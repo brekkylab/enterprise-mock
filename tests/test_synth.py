@@ -1,3 +1,5 @@
+import hashlib
+
 from app import synth
 
 DOC = "dsid_00908a2dda4b4d359194a091019e8367"
@@ -57,3 +59,44 @@ def test_notion_blocks_roundtrip_content_verbatim():
     # block ids are deterministic and per-position
     assert blocks[0]["id"] == synth.notion_block_id("n-page", 0)
     assert blocks[0]["type"] == "heading_1"
+
+
+# --- S3 tests ---
+
+
+def test_s3_access_key_id_is_stable_and_shaped():
+    ak = synth.s3_access_key_id("usr-abc")
+    assert ak.startswith("AKIA") and len(ak) == 20 and ak.isalnum() and ak.upper() == ak
+    assert synth.s3_access_key_id("usr-abc") == ak            # stable
+    assert synth.s3_access_key_id("usr-xyz") != ak            # per-token
+
+
+def test_s3_secret_access_key_is_stable_and_shaped():
+    sk = synth.s3_secret_access_key("usr-abc")
+    assert len(sk) == 40 and synth.s3_secret_access_key("usr-abc") == sk
+    assert synth.s3_secret_access_key("usr-xyz") != sk
+
+
+def test_s3_etag_is_quoted_md5_of_content():
+    etag = synth.s3_etag("o1", "hello")
+    assert etag == '"' + hashlib.md5(b"hello").hexdigest() + '"'
+
+
+def test_s3_timestamps():
+    assert synth.s3_iso(1_700_000_000).endswith("Z") and "T" in synth.s3_iso(1_700_000_000)
+    assert synth.s3_http_date(1_700_000_000).endswith(" GMT")
+
+
+def test_confluence_space_key_unique_for_colliding_names():
+    # initials alone collide; the hash suffix must disambiguate
+    a = synth.confluence_space_key("eng-serving-runtime")
+    b = synth.confluence_space_key("eng-sre/runbooks")
+    assert a != b
+    assert synth.confluence_space_key("eng-serving-runtime") == a  # deterministic
+
+
+def test_jira_project_key_unique_for_colliding_names():
+    a = synth.jira_project_key("eng-serving-runtime")
+    b = synth.jira_project_key("eng-sre/runbooks")
+    assert a != b
+    assert synth.jira_project_key("eng-serving-runtime") == a  # deterministic

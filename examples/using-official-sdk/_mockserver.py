@@ -47,71 +47,28 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _arg(name: str, argv: list[str] | None = None) -> str | None:
-    """The value of ``--name <v>`` / ``--name=v`` on the command line (or None)."""
-    argv = sys.argv[1:] if argv is None else argv
-    flag = f"--{name}"
-    for i, a in enumerate(argv):
-        if a == flag and i + 1 < len(argv):
-            return argv[i + 1]
-        if a.startswith(flag + "="):
-            return a.split("=", 1)[1]
-    return None
-
-
-def _url_from_argv(argv: list[str] | None = None) -> str | None:
-    """The value of ``--url`` on the command line (or None)."""
-    return _arg("url", argv)
-
-
-def cli_token(default: str | None = None) -> str | None:
-    """The ``--token`` from the command line, else ``default`` (usually the admin token).
-
-    A per-user token (from ``GET /_mock/users`` on a running server) makes every response
-    ACL-filtered to that user — pair it with ``--url``. Bearer-auth services (Slack, Gmail,
-    Drive, GitHub) use this directly."""
-    t = _arg("token")
-    if t:
-        print("authenticating with --token → responses are ACL-filtered to that user")
-    return t or default
-
-
-def cli_basic_auth(default_user: str, default_password: str | None = None) -> tuple[str, str | None]:
-    """(username, password) for Atlassian HTTP Basic auth (Jira / Confluence).
-
-    Reads ``--username`` and ``--password``; ``--token`` is accepted as the password too.
-    The mock resolves the caller by the password (api token), falling back to the username
-    email — so either identifies the user whose ACL applies. Falls back to the given defaults."""
-    user = _arg("username")
-    pw = _arg("password") or _arg("token")
-    if user or pw:
-        print(f"authenticating as {user or default_user} → responses are ACL-filtered to that user")
-    return (user or default_user), (pw or default_password)
-
-
-def google_service_account_info(base_url: str) -> tuple[dict, str | None]:
+def google_service_account_info(base_url: str, subject: str | None = None) -> tuple[dict, str | None]:
     """Fetch the mock's service-account key from ``/_mock/credentials`` — the mock-specific glue,
     standing in for the JSON you'd download from the Cloud Console. Returns ``(sa_info, subject)``
-    where ``subject`` is ``--user <email>`` (the user to impersonate via domain-wide delegation,
-    ACL-filtered to them) or None (bare service account → admin, sees everything). The caller
-    turns ``sa_info`` into a credential with the official google-auth library (see the examples).
-    ``token_uri`` inside ``sa_info`` already points at the mock's ``/oauth2/token``."""
+    where ``subject`` is the user to impersonate via domain-wide delegation (ACL-filtered to them)
+    or None (bare service account → admin, sees everything). The caller turns ``sa_info`` into a
+    credential with the official google-auth library (see the examples). ``token_uri`` inside
+    ``sa_info`` already points at the mock's ``/oauth2/token``."""
     import json
     import urllib.request
 
     with urllib.request.urlopen(f"{base_url.rstrip('/')}/_mock/credentials") as r:
         sa = json.load(r)["service_account"]
-    subject = _arg("user")
     if subject:
         print(f"impersonating {subject} → responses are ACL-filtered to that user")
     return sa, subject
 
 
-def google_oauth_user(base_url: str) -> tuple[str, str, str, str]:
+def google_oauth_user(base_url: str, user: str | None = None) -> tuple[str, str, str, str]:
     """Mock glue for the authorized-user (3LO) flow. Returns ``(client_id, client_secret,
     refresh_token, token_uri)``: the shared OAuth client's id/secret and ``token_uri`` from
-    ``/_mock/credentials``, plus a user's bearer token (from ``/_mock/users`` — ``--user <email>``
-    or the first) used as the ``refresh_token``. The caller builds the Credentials with the
+    ``/_mock/credentials``, plus a user's bearer token (from ``/_mock/users`` — ``user`` if given,
+    else the first) used as the ``refresh_token``. The caller builds the Credentials with the
     official google-auth library (see gmail.py); the library then refreshes against ``token_uri``
     (the mock's ``/oauth2/token``)."""
     import json
@@ -121,10 +78,9 @@ def google_oauth_user(base_url: str) -> tuple[str, str, str, str]:
         creds = json.load(r)
     with urllib.request.urlopen(f"{base_url.rstrip('/')}/_mock/users") as r:
         users = json.load(r)["users"]
-    want = _arg("user")
-    who = next((u for u in users if u["email"] == want), None) if want else (users[0] if users else None)
+    who = next((u for u in users if u["email"] == user), None) if user else (users[0] if users else None)
     if who is None:
-        raise SystemExit(f"--user {want!r} not found in /_mock/users" if want else "no users on the mock")
+        raise SystemExit(f"--user {user!r} not found in /_mock/users" if user else "no users on the mock")
     print(f"authenticating as {who['email']} (authorized_user — client_id/secret + refresh token)")
     client = creds["oauth_client"]
     return client["client_id"], client["client_secret"], who["token"], creds["token_uri"]
@@ -141,8 +97,8 @@ def _healthy(url: str) -> bool:
 
 @contextlib.contextmanager
 def serve_or_connect(records: list[dict], url: str | None = None):
-    """Use a ``--url`` mock if reachable; otherwise spin up a local one on ``records``."""
-    url = (url or _url_from_argv() or "").strip()
+    """Use the given ``url`` mock if reachable; otherwise spin up a local one on ``records``."""
+    url = (url or "").strip()
     if url and _healthy(url):
         print(f"using mock server at {url}")
         yield types.SimpleNamespace(base_url=url.rstrip("/"), token=TOKEN, data_dir=None)

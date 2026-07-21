@@ -170,11 +170,20 @@ def _key(container: str, fallback: str) -> str:
 
 
 def jira_project_key(container: str) -> str:
-    return _key(container, "PROJ")
+    """A project key unique per container: the readable word-initials prefix (see :func:`_key`)
+    plus a short hash of the full name, so distinct projects never collide on the same key (and the
+    router's reverse key->project lookup + the derived issue keys stay unambiguous). Deterministic,
+    valid Jira shape (uppercase letter start, uppercase alnum)."""
+    return _key(container, "PROJ") + _digest(container)[:6].upper()
 
 
 def confluence_space_key(container: str) -> str:
-    return _key(container, "SPACE")
+    """A space key that is unique per container: the readable word-initials prefix (see
+    :func:`_key`) plus a short hash of the full name. Initials alone collide — e.g.
+    ``eng-serving-runtime`` and ``eng-sre/runbooks`` both reduce to ``ESR`` — which made distinct
+    spaces share a key and the router's reverse lookup ambiguous. The 6-hex suffix disambiguates
+    (deterministically, so keys stay stable across imports)."""
+    return _key(container, "SPACE") + _digest(container)[:6].upper()
 
 
 # --- Notion --------------------------------------------------------------------
@@ -254,4 +263,50 @@ def notion_blocks_to_text(blocks: list[dict]) -> str:
         text = "".join(rt["plain_text"] for rt in b[t].get("rich_text", []))
         out.append(_NOTION_PREFIX.get(t, "") + text)
     return "\n".join(out)
+
+
+# --- S3 -------------------------------------------------------------------------
+# Credentials are derived deterministically from a caller's bearer token so the verifying
+# router (app.auth.resolve_sigv4) and the signing clients (examples/tests) agree on the
+# access-key/secret pair without any stored keypair. ETag is the real single-part MD5.
+
+_B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"      # RFC 4648 base32 alphabet (AK is [A-Z2-7])
+_SK_ALPHABET = ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
+
+
+def _base_n(hex_digest: str, alphabet: str, length: int) -> str:
+    n = int(hex_digest, 16)
+    base = len(alphabet)
+    out = []
+    for _ in range(length):
+        n, rem = divmod(n, base)
+        out.append(alphabet[rem])
+    return "".join(out)
+
+
+def s3_access_key_id(token: str) -> str:
+    """A stable ``AKIA``-prefixed 20-char access key id for a bearer token."""
+    body = _base_n(_digest("s3-ak:" + token), _B32, 16)
+    return "AKIA" + body
+
+
+def s3_secret_access_key(token: str) -> str:
+    """A stable 40-char secret access key for a bearer token."""
+    d = _digest("s3-sk:" + token) + _digest("s3-sk2:" + token)
+    return _base_n(d, _SK_ALPHABET, 40)
+
+
+def s3_etag(doc_id: str, content: str) -> str:
+    """The quoted MD5 hex ETag S3 returns for a single-part object (MD5 of the body)."""
+    return '"' + hashlib.md5(content.encode("utf-8")).hexdigest() + '"'
+
+
+def s3_iso(ts: int) -> str:
+    """S3 ListObjectsV2 LastModified, e.g. 2024-04-05T17:00:00.000Z."""
+    return rfc3339_millis(ts)
+
+
+def s3_http_date(ts: int) -> str:
+    """The Last-Modified response header, RFC 1123: Fri, 05 Apr 2024 17:00:00 GMT."""
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
 
