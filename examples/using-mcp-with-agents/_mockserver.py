@@ -46,57 +46,23 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-# ------------------------------------------------------------------ CLI parsing
-# One place for `--flag value` / `--flag=value` parsing shared by the mock runner, the server
-# registry, and the agent scripts.
+def s3_credentials(base_url: str, access_key: str | None = None,
+                   secret_key: str | None = None, user: str | None = None) -> tuple[str, str]:
+    """Resolve the (access_key_id, secret_access_key) an S3 client should use — S3 authenticates
+    with an AWS keypair, not a bearer token.
 
-def cli_arg(name: str, argv: list[str] | None = None) -> str | None:
-    """The value of ``--name value`` / ``--name=value`` on the command line (or None)."""
-    argv = sys.argv[1:] if argv is None else argv
-    flag = f"--{name}"
-    for i, a in enumerate(argv):
-        if a == flag and i + 1 < len(argv):
-            return argv[i + 1]
-        if a.startswith(flag + "="):
-            return a.split("=", 1)[1]
-    return None
-
-
-def cli_token(default: str | None = TOKEN) -> str | None:
-    """``--token`` if given (→ ACL-filtered to that user), else ``default`` (the admin token).
-
-    Grab a per-user token from ``GET /_mock/users`` on a running server and pair it with ``--url``
-    to scope retrieval to that user."""
-    t = cli_arg("token")
-    if t:
-        print("authenticating with --token → retrieval is ACL-filtered to that user")
-    return t or default
-
-
-def cli_username(default: str | None = None) -> str | None:
-    """``--username`` if given, else ``default`` (Atlassian Basic-auth identity for mcp-atlassian)."""
-    return cli_arg("username") or default
-
-
-def s3_credentials(base_url: str) -> tuple[str, str]:
-    """The (access_key_id, secret_access_key) for the S3 example — S3 authenticates with an AWS
-    keypair, not a bearer token.
-
-    ``--access-key`` + ``--secret-key`` on the command line win (real AWS creds). Otherwise the
-    pair is fetched from ``GET /_mock/users``: ``--user <email>`` picks that user's keys (responses
-    are ACL-filtered to them), else the admin keypair (sees everything)."""
-    ak, sk = cli_arg("access-key"), cli_arg("secret-key")
-    if ak and sk:
-        print("authenticating with --access-key/--secret-key")
-        return ak, sk
+    An explicit ``access_key`` + ``secret_key`` win. Otherwise a pair is fetched from
+    ``GET {base_url}/_mock/users``: ``user`` (an email) picks that user's keys (responses are
+    ACL-filtered to them), else the admin keypair (sees everything). The keys shown there are what
+    the mock's SigV4 verifier accepts."""
+    if access_key and secret_key:
+        return access_key, secret_key
     with urllib.request.urlopen(f"{base_url.rstrip('/')}/_mock/users") as r:
         data = json.load(r)
-    want = cli_arg("user")
-    if want:
-        who = next((u for u in data["users"] if u["email"] == want), None)
+    if user:
+        who = next((u for u in data["users"] if u["email"] == user), None)
         if who is None:
-            raise SystemExit(f"--user {want!r} not found in /_mock/users")
-        print(f"using S3 keys for {want} → responses are ACL-filtered to that user")
+            raise SystemExit(f"--user {user!r} not found in /_mock/users")
         return who["s3_access_key_id"], who["s3_secret_access_key"]
     return data["admin_s3_access_key_id"], data["admin_s3_secret_access_key"]
 
@@ -112,8 +78,8 @@ def _healthy(url: str) -> bool:
 
 @contextlib.contextmanager
 def serve_or_connect(records: list[dict], url: str | None = None):
-    """Use a ``--url`` mock if reachable; otherwise spin up a local one on ``records``."""
-    url = (url or cli_arg("url") or "").strip()
+    """Use the given ``url`` mock if reachable; otherwise spin up a local one on ``records``."""
+    url = (url or "").strip()
     if url and _healthy(url):
         print(f"using mock server at {url}")
         yield types.SimpleNamespace(base_url=url.rstrip("/"), token=TOKEN, data_dir=None)

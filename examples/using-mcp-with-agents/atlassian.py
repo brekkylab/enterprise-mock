@@ -17,6 +17,7 @@ Prereqs: Docker; `pip install -e ".[mcp]"`; an LLM key for `--agent` (`ANTHROPIC
 """
 from __future__ import annotations
 
+import argparse
 import socket
 import sys
 from urllib.parse import urlparse
@@ -24,7 +25,7 @@ from urllib.parse import urlparse
 from mcp import StdioServerParameters
 
 from _agent import run_agent
-from _mockserver import cli_arg, cli_token, cli_username, serve_or_connect
+from _mockserver import serve_or_connect
 
 CORPUS = [
     {"source_type": "jira", "project": "payments", "title": "SEV2: checkout latency spike",
@@ -75,7 +76,21 @@ def build_params(base_url: str, token: str, username: str | None) -> StdioServer
     return StdioServerParameters(command="docker", args=args)
 
 
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Drive mcp-atlassian over MCP against the mock.")
+    p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+    p.add_argument("--token", help="mock bearer token from GET /_mock/users "
+                                   "(default: the admin token, which sees everything)")
+    p.add_argument("--username", help="Atlassian Basic-auth username (required for a remote --url)")
+    p.add_argument("--agent", choices=("anthropic", "openai"), default="anthropic",
+                   help="which LLM agent to run (default: anthropic)")
+    return p.parse_args()
+
+
 if __name__ == "__main__":
-    with serve_or_connect(CORPUS) as mock:
-        params = build_params(mock.base_url, cli_token(mock.token), cli_username())
-        run_agent(cli_arg("agent"), params, QUESTION)
+    args = _parse_args()
+    with serve_or_connect(CORPUS, url=args.url) as mock:
+        if args.token:
+            print("authenticating with --token → retrieval is ACL-filtered to that user")
+        params = build_params(mock.base_url, args.token or mock.token, args.username)
+        run_agent(args.agent, params, QUESTION)

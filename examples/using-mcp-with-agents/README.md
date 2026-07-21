@@ -21,7 +21,11 @@ helpers:
 | File | What it is |
 |---|---|
 | `_agent.py` | The agent loop for both backends: `--agent anthropic` (default, Anthropic SDK + its beta MCP tool runner) or `--agent openai` (OpenAI Agents SDK) |
-| `_mockserver.py` | Starts the mock (`app.main`) on a small corpus, plus the shared `--url` / `--token` / `--username` / `--access-key` / `--secret-key` / `--user` CLI parsing |
+| `_mockserver.py` | Starts the mock (`app.main`) on a small corpus (or connects to a `--url` one), and resolves S3 credentials from `/_mock/users` |
+
+Each service file declares its own CLI options with `argparse` — run `python <file> --help` to see
+exactly what that provider takes (e.g. `s3.py` takes `--access-key`/`--secret-key`/`--user`,
+`atlassian.py` takes `--token`/`--username`). All accept `--url` and `--agent {anthropic,openai}`.
 
 Each example spins up its own small mock by default, or pass `--url` to use an already-running one
 (unreachable → it falls back to spinning up its own).

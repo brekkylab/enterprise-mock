@@ -17,10 +17,12 @@ or `OPENAI_API_KEY` with `--agent openai`). Run from the repo root:
 """
 from __future__ import annotations
 
+import argparse
+
 from mcp import StdioServerParameters
 
 from _agent import run_agent
-from _mockserver import cli_arg, s3_credentials, serve_or_connect
+from _mockserver import s3_credentials, serve_or_connect
 
 CORPUS = [
     {"source_type": "s3", "bucket": "payments", "key": "incidents/sev2.md",
@@ -45,7 +47,21 @@ def build_params(base_url: str, access_key: str, secret_key: str) -> StdioServer
              "AWS_REGION": "us-east-1", "READ_OPERATIONS_ONLY": "true"})
 
 
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Drive awslabs aws-api-mcp-server over MCP against the mock's S3.")
+    p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+    p.add_argument("--access-key", help="AWS access key id (S3 uses a keypair, not a token)")
+    p.add_argument("--secret-key", help="AWS secret access key")
+    p.add_argument("--user", help="fetch this user's S3 keypair from GET /_mock/users "
+                                  "(default: the admin keypair, which sees everything)")
+    p.add_argument("--agent", choices=("anthropic", "openai"), default="anthropic",
+                   help="which LLM agent to run (default: anthropic)")
+    return p.parse_args()
+
+
 if __name__ == "__main__":
-    with serve_or_connect(CORPUS) as mock:
-        ak, sk = s3_credentials(mock.base_url)  # --access-key/--secret-key, or fetched from /_mock/users
-        run_agent(cli_arg("agent"), build_params(mock.base_url, ak, sk), QUESTION)
+    args = _parse_args()
+    with serve_or_connect(CORPUS, url=args.url) as mock:
+        # explicit keypair, else fetched from /_mock/users (--user, else admin)
+        ak, sk = s3_credentials(mock.base_url, args.access_key, args.secret_key, args.user)
+        run_agent(args.agent, build_params(mock.base_url, ak, sk), QUESTION)

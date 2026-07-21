@@ -13,10 +13,12 @@ Prereqs: Node/npx; `pip install -e ".[mcp]"`; an LLM key for `--agent` (`ANTHROP
 """
 from __future__ import annotations
 
+import argparse
+
 from mcp import StdioServerParameters
 
 from _agent import run_agent
-from _mockserver import cli_arg, cli_token, serve_or_connect
+from _mockserver import serve_or_connect
 
 CORPUS = [
     {"source_type": "notion", "teamspace": "payments", "title": "SEV2: checkout latency spike",
@@ -39,7 +41,20 @@ def build_params(base_url: str, token: str) -> StdioServerParameters:
              "NOTION_VERSION": "2025-09-03"})
 
 
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Drive notion-mcp-server over MCP against the mock.")
+    p.add_argument("--url", help="mock base URL to drive (default: spin up a local throwaway mock)")
+    p.add_argument("--token", help="mock bearer token from GET /_mock/users "
+                                   "(default: the admin token, which sees everything)")
+    p.add_argument("--agent", choices=("anthropic", "openai"), default="anthropic",
+                   help="which LLM agent to run (default: anthropic)")
+    return p.parse_args()
+
+
 if __name__ == "__main__":
-    with serve_or_connect(CORPUS) as mock:
-        params = build_params(mock.base_url, cli_token(mock.token))
-        run_agent(cli_arg("agent"), params, QUESTION)
+    args = _parse_args()
+    with serve_or_connect(CORPUS, url=args.url) as mock:
+        if args.token:
+            print("authenticating with --token → retrieval is ACL-filtered to that user")
+        params = build_params(mock.base_url, args.token or mock.token)
+        run_agent(args.agent, params, QUESTION)
