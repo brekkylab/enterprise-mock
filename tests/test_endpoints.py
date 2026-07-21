@@ -707,3 +707,29 @@ def test_slack_responses_unchanged_by_enrichment(client, admin_h):
             assert k in ch, f"slack channel missing {k} (fidelity regression)"
     srch = client.get("/slack/api/search.messages", params={"query": "gateway"}, headers=admin_h).json()
     assert srch["ok"] and "messages" in srch and "matches" in srch["messages"]
+
+
+# --- OpenAPI enrichment: gmail ------------------------------------------------------------
+
+def test_gmail_messages_documents_q_param(client):
+    op = client.get("/openapi.json").json()["paths"]["/gmail/v1/users/{user_id}/messages"]["get"]
+    names = {p["name"] for p in op.get("parameters", [])}
+    assert {"q", "maxResults", "pageToken"} <= names
+    assert "user_id" in names  # path param preserved
+
+
+def test_gmail_messages_has_typed_response_schema(client):
+    op = client.get("/openapi.json").json()["paths"]["/gmail/v1/users/{user_id}/messages"]["get"]
+    schema = op["responses"]["200"]["content"]["application/json"]["schema"]
+    assert schema != {}
+
+
+def test_gmail_responses_unchanged_by_enrichment(client, admin_h):
+    lst = client.get("/gmail/v1/users/me/messages", headers=admin_h).json()
+    assert "messages" in lst and "resultSizeEstimate" in lst
+    if lst["messages"]:
+        mid = lst["messages"][0]["id"]
+        msg = client.get(f"/gmail/v1/users/me/messages/{mid}", params={"format": "full"},
+                         headers=admin_h).json()
+        for k in ("id", "threadId", "labelIds", "snippet", "internalDate", "sizeEstimate", "payload"):
+            assert k in msg, f"gmail message missing {k} (fidelity regression)"

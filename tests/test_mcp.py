@@ -238,3 +238,28 @@ def test_mcp_slack_bridge_acl_enforced(live_server):
 
     assert finds(settings.admin_token), "admin search should surface the restricted message"
     assert not finds(user["token"]), f"{email} search should not surface the restricted message"
+
+
+# ------------------------------------------------------ Gmail (generic OpenAPI→MCP bridge)
+
+def test_mcp_gmail_bridge_acl_enforced(live_server):
+    """A Gmail message the admin can read via the bridge's messages.get tool is 404 for a user."""
+    pytest.importorskip("fastmcp")
+    base, settings = live_server
+    user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
+    row, email = _restricted_doc(settings, user["token"], "gmail")
+    assert row is not None, f"no Gmail message is ACL-restricted from {email} in the sample corpus"
+    msg_id = row["doc_id"]
+
+    def reads(token):
+        try:
+            return asyncio.run(_call(
+                _bridge_params("gmail", base, token),
+                tool_pred=lambda n: n.startswith("gmail_messages_get"),
+                args={"user_id": "me", "msg_id": msg_id, "format": "full"},
+                ok_pred=lambda t: '"payload"' in t or '"snippet"' in t))
+        except Exception:  # noqa: BLE001
+            return False
+
+    assert reads(settings.admin_token), "admin should read the message through the bridge"
+    assert not reads(user["token"]), f"{email} should be blocked from the message via the bridge"

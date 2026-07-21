@@ -22,6 +22,8 @@ service (like the other `examples/` dirs) — run the one you want:
 - **`slack.py`** via the same **OpenAPI→MCP bridge** — no maintained Slack MCP server accepts a
   base-URL override (they hard-wire `slack.com`), so the bridge serves the mock's Slack Web API
   (`/slack/api/*`) as tools instead.
+- **`gmail.py`** via the same **OpenAPI→MCP bridge** — Gmail MCP servers hard-wire `googleapis.com`
+  and need real Google OAuth, so the bridge serves the mock's Gmail API (`/gmail/*`) as tools.
 
 Each service file builds its own MCP `StdioServerParameters` and calls `run_agent(...)`. Two shared
 helpers:
@@ -175,4 +177,4 @@ the OpenAPI→MCP bridge above exists (it needs no vendor server at all):
 - **Slack** — no API-base override in any maintained server (hard-wired to `slack.com`).
   **→ driven via the bridge (`slack.py`) instead.**
 - **Gmail / Google Drive** — official and community servers hard-wire `googleapis.com` and
-  require real Google OAuth; no endpoint override.
+  require real Google OAuth; no endpoint override. **→ Gmail driven via the bridge (`gmail.py`).**

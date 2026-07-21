@@ -103,6 +103,9 @@ SAMPLE = [
      "readers": ["ceo@acme.com", "ava@acme.com"], "cc": "cfo@acme.com",
      "attachments": [{"filename": "Q1-deck.pdf", "mime": "application/pdf", "size": 2048,
                       "content": "PDF bytes placeholder"}]},
+    {"source_type": "gmail", "mailbox": "cfo", "title": "Confidential comp review",
+     "content": "Q3 compensation adjustments — do not forward.", "author_email": "cfo@acme.com",
+     "readers": ["cfo@acme.com"]},
 
     {"source_type": "google_drive", "folder": "marketing", "group": "marketing",
      "title": "Brand guidelines v3", "content": "Logo usage, palette, typography.",
