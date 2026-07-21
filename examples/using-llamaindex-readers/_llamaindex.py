@@ -206,6 +206,42 @@ def point_gmail_at(base_url: str) -> None:
     discovery.build = _build
 
 
+def point_drive_at(base_url: str) -> None:
+    """Redirect GoogleDriveReader at the mock.
+
+    Same wrap point as `point_gmail_at`: `GoogleDriveReader` builds its Drive service with
+    googleapiclient's `build` and no host override, and every method that needs it
+    (`_get_fileids_meta`, `_download_file`) does a *local* `from googleapiclient.discovery import
+    build` rather than importing it at module scope (confirmed empirically:
+    `'build' in dir(llama_index.readers.google.drive.base)` is `False`), so there is no module
+    attribute on `drive.base` to wrap. Wrap `googleapiclient.discovery.build` itself, one level up
+    the chain, exactly as `point_gmail_at` does — the local imports re-read whatever that symbol
+    currently is at call time. KEY DIFFERENCE from Gmail: Drive's bundled discovery doc's rootUrl
+    already carries the `/drive/v3` service path, so the replacement `api_endpoint` must include
+    it (`base + "/drive/v3"`); Gmail's api_endpoint is the base with no suffix (see
+    `using-official-sdk/gdrive.py` vs `gmail.py`). Idempotent; fails loudly if the target `build`
+    symbol is gone rather than silently letting the reader hit real googleapis.com.
+    """
+    from google.api_core.client_options import ClientOptions
+    from googleapiclient import discovery
+
+    base = base_url.rstrip("/")
+    if not hasattr(discovery, "build"):
+        raise RuntimeError("point_drive_at: googleapiclient.discovery.build is gone — update the shim")
+    if getattr(discovery.build, "_points_at_mock", False):
+        return
+
+    _real_build = discovery.build
+
+    def _build(*args, **kwargs):
+        kwargs.setdefault("static_discovery", True)
+        kwargs["client_options"] = ClientOptions(api_endpoint=f"{base}/drive/v3")
+        return _real_build(*args, **kwargs)
+
+    _build._points_at_mock = True
+    discovery.build = _build
+
+
 def patch_notion_at(base_url: str) -> None:
     """Redirect NotionPageReader at the mock. The reader hardcodes the Notion host in module-level
     URL constants (no base_url arg); rebind every one that points at api.notion.com. Fails loudly

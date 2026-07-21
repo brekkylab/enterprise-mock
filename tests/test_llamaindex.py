@@ -298,3 +298,91 @@ def test_gmail(live_server):
     finally:
         discovery.build = _orig_build
         gm.GmailReader._get_credentials = _orig_get_credentials
+
+
+def _google_service_account_info(base_url: str) -> dict:
+    """Fetch the mock's service-account key from `/_mock/credentials` (the mock-specific glue
+    standing in for the JSON downloaded from the Cloud Console) — bare (no `subject`), so the
+    resulting credential authenticates as the service account itself (admin, sees everything).
+
+    Duplicated from `examples/using-official-sdk/_mockserver.py:google_service_account_info`
+    (tests don't import from examples)."""
+    import json
+    import urllib.request
+
+    with urllib.request.urlopen(f"{base_url.rstrip('/')}/_mock/credentials") as r:
+        return json.load(r)["service_account"]
+
+
+def _point_drive_at(base_url: str) -> None:
+    """Redirect GoogleDriveReader at the mock.
+
+    Same wrap point as `_point_gmail_at`: `GoogleDriveReader` builds its Drive service with
+    googleapiclient's `build` and no host override, and every method that needs it
+    (`_get_fileids_meta`, `_download_file`) does a *local* `from googleapiclient.discovery import
+    build` rather than importing it at module scope (confirmed empirically:
+    `'build' in dir(llama_index.readers.google.drive.base)` is `False`), so there is no module
+    attribute on `drive.base` to wrap. Wrap `googleapiclient.discovery.build` itself, one level up
+    the chain, exactly as `_point_gmail_at` does. KEY DIFFERENCE from Gmail: Drive's bundled
+    discovery doc's rootUrl already carries the `/drive/v3` service path, so the replacement
+    `api_endpoint` must include it (`base + "/drive/v3"`); Gmail's api_endpoint is the base with no
+    suffix. Idempotent; fails loudly if the target `build` symbol is gone rather than silently
+    letting the reader hit real googleapis.com.
+
+    Duplicated from `examples/using-llamaindex-readers/_llamaindex.py:point_drive_at` (tests
+    don't import from examples)."""
+    from google.api_core.client_options import ClientOptions
+    from googleapiclient import discovery
+
+    base = base_url.rstrip("/")
+    if not hasattr(discovery, "build"):
+        raise RuntimeError("point_drive_at: googleapiclient.discovery.build is gone — update the shim")
+    if getattr(discovery.build, "_points_at_mock", False):
+        return
+
+    _real_build = discovery.build
+
+    def _build(*args, **kwargs):
+        kwargs.setdefault("static_discovery", True)
+        kwargs["client_options"] = ClientOptions(api_endpoint=f"{base}/drive/v3")
+        return _real_build(*args, **kwargs)
+
+    _build._points_at_mock = True
+    discovery.build = _build
+
+
+def test_gdrive(live_server):
+    pytest.importorskip("llama_index.readers.google")
+    from googleapiclient import discovery
+    from llama_index.readers.google import GoogleDriveReader
+
+    base, admin = _base_token(live_server)
+
+    # Process-global patch (module attribute), so restore it after the test — left in place it'd
+    # leak into later tests in the same session, e.g. test_sdk.py's drive/gmail cases calling the
+    # real `googleapiclient.discovery.build` directly with their own `client_options` (this shim's
+    # wrapper would clobber that with a stale base_url from this test's already-shut-down
+    # live_server).
+    _orig_build = discovery.build
+    try:
+        _point_drive_at(base)
+
+        # `GoogleDriveReader.__init__` accepts `service_account_key` (a raw dict) directly —
+        # an injection hook, so no monkeypatching of a private method is needed here (contrast
+        # `GmailReader`, which has none). `_get_credentials()` turns it into a Credentials object
+        # via `service_account.Credentials.from_service_account_info(self.service_account_key,
+        # scopes=SCOPES)` — bare, no `subject` — so this path is admin-only (fine for this test;
+        # `gdrive.py` documents the `subject`/impersonation gap and its workaround).
+        sa_info = _google_service_account_info(base)
+        reader = GoogleDriveReader(service_account_key=sa_info)
+
+        # `load_data()` requires `folder_id` or `file_ids` (a bare `query_string` alone is a
+        # no-op in this reader version — it only narrows results once one of those is given, see
+        # `GoogleDriveReader.load_data`). "root" is the mock's synthetic root: `_get_fileids_meta`
+        # recurses from it through every visible folder (marketing/finance/security) down to
+        # their files, so this reaches the whole visible corpus without resolving a real folder id.
+        docs = reader.load_data(folder_id="root")
+        assert docs, "expected at least one Drive Document"
+        assert any("palette" in d.text.lower() or "revenue" in d.text.lower() for d in docs)
+    finally:
+        discovery.build = _orig_build
