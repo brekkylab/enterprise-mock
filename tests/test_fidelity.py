@@ -123,9 +123,16 @@ def test_confluence_body_and_version(tmp_path):
     ])
     conn = store.connect_ro(s.db_path)
     row = store.get_document(conn, "confluence", "c1")
-    page = _confluence_page(conn, _req(), row, "body.storage,body.view,version,metadata.labels,history")
+    page = _confluence_page(
+        conn, _req(), row,
+        "body.storage,body.view,body.export_view,version,metadata.labels,history")
     # storage (XHTML source) and view (rendered) must differ
     assert page["body"]["storage"]["value"] != page["body"]["view"]["value"]
+    # export_view (rendered, used by llama-index's ConfluenceReader) carries the same content
+    # as view but without editor-only attributes (e.g. no `auto-cursor-target` class)
+    assert page["body"]["export_view"]["representation"] == "export_view"
+    assert "para one" in page["body"]["export_view"]["value"]
+    assert "auto-cursor-target" not in page["body"]["export_view"]["value"]
     # version reflects the update + BYO message/minorEdit; history carries creation
     assert page["version"]["number"] == 2 and page["version"]["message"] == "edited"
     assert page["version"]["minorEdit"] is True

@@ -348,6 +348,14 @@ def _view(content: str) -> str:
     return f'<div class="contentLayout2"><div class="columnLayout single">{body}</div></div>'
 
 
+def _export_view(content: str) -> str:
+    """Rendered ``export_view`` HTML — the real API's export-oriented rendering (same content
+    as ``view``, without editor-only attributes like ``auto-cursor-target``)."""
+    paras = [p for p in content.split("\n\n") if p.strip()] or [content]
+    body = "".join(f"<p>{escape(p)}</p>" for p in paras)
+    return f'<div class="contentLayout2"><div class="columnLayout single">{body}</div></div>'
+
+
 def _space_container_for_key(conn, space_key: str) -> str | None:
     for r in store.list_containers(conn, "confluence"):
         if synth.confluence_space_key(r["name"]) == space_key:
@@ -617,6 +625,9 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
                                                   "representation": "storage"}
     if "body.view" in expand:
         page.setdefault("body", {})["view"] = {"value": _view(row["content"]), "representation": "view"}
+    if "body.export_view" in expand:
+        page.setdefault("body", {})["export_view"] = {"value": _export_view(row["content"]),
+                                                       "representation": "export_view"}
     if "body.atlas_doc_format" in expand:
         import json as _json
         page.setdefault("body", {})["atlas_doc_format"] = {

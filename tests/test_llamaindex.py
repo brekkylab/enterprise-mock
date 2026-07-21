@@ -29,6 +29,23 @@ def test_github(live_server):
     assert all("Corrects the refill tick" not in d.text for d in docs)  # gh-pr-1 (closed) excluded
 
 
+def test_confluence(live_server):
+    pytest.importorskip("llama_index.readers.confluence")
+    from llama_index.readers.confluence import ConfluenceReader
+
+    base, admin = _base_token(live_server)
+    # atlassian-python-api 4.0.7 does not append `/wiki` itself regardless of `cloud`, so the
+    # mock's `/atlassian/wiki/rest/api` root must be spelled out here (`cloud` only toggles
+    # cloud-specific API shapes elsewhere, not the URL). `max_num_results` must be passed
+    # explicitly: llama-index-readers-confluence 0.7.0's `load_data` forwards a bare `limit=None`
+    # to `Confluence.get_all_pages_from_space`, which does `len(results) <= limit` and raises
+    # `TypeError` when `limit` is None — a client-side bug independent of the mock/server.
+    reader = ConfluenceReader(base_url=f"{base}/atlassian/wiki", cloud=False, api_token=admin)
+    docs = reader.load_data(space_key="handbook", max_num_results=50)
+    assert docs, "expected at least one page Document"
+    assert any("How we build software" in d.text for d in docs)  # SAMPLE cf-handbook body
+
+
 def _patch_s3fs_walk() -> None:
     """Work around a multi-year fsspec/s3fs compatibility bug (present since at least the
     2023.x releases and reproducing on every version installable today, including fsspec/s3fs
