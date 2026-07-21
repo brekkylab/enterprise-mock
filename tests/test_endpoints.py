@@ -611,3 +611,16 @@ def test_s3_unsatisfiable_range_is_416(live_server):
     total = len("Check dashboards, roll back, page on-call.")
     assert e.value.headers.get("Content-Range") == f"bytes */{total}"
     assert e.value.headers.get("Content-Type") == "application/xml"
+
+
+def test_atlassian_errors_use_atlassian_envelope(client):
+    # atlassian-python-api's Confluence client does response.json()["message"] on any error, so the
+    # mock must shape /atlassian errors like Atlassian Cloud (message + statusCode), not {"detail"}.
+    r = client.get("/atlassian/wiki/rest/api/content/999999")   # unauthenticated -> 401
+    assert r.status_code == 401
+    assert r.json().get("message") and r.json().get("statusCode") == 401
+    r2 = client.get("/atlassian/wiki/rest/api/content/search")  # 'search' fails int path validation -> 422
+    assert r2.status_code == 422 and "message" in r2.json()
+    # non-atlassian paths keep FastAPI's default {"detail"} envelope
+    r3 = client.get("/no-such-route")
+    assert r3.status_code == 404 and "detail" in r3.json() and "message" not in r3.json()

@@ -5,11 +5,16 @@ indexes (issue number / Jira key / Confluence id -> doc_id) for O(1) get-by-id.
 """
 from __future__ import annotations
 
+import http
 import threading
 from contextlib import asynccontextmanager
 
 import yaml
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import store, synth
 from app.acl import Acl
@@ -92,6 +97,40 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="EnterpriseRAG-Bench Mock Server", lifespan=lifespan)
+
+
+# Atlassian clients (atlassian-python-api, used by mcp-atlassian) parse error bodies as Atlassian
+# Cloud's envelope — Confluence's raise_for_status does ``response.json()["message"]`` — so
+# FastAPI's default ``{"detail": ...}`` makes every error a cryptic ``KeyError: 'message'`` in the
+# client. For ``/atlassian`` paths, shape errors like Atlassian (message + statusCode, plus Jira's
+# errorMessages); every other prefix keeps FastAPI's default body.
+
+def _atlassian_error_body(status_code: int, detail) -> dict:
+    try:
+        reason = http.HTTPStatus(status_code).phrase
+    except ValueError:
+        reason = "Error"
+    message = detail if isinstance(detail, str) else str(detail)
+    return {"statusCode": status_code, "message": message, "reason": reason,
+            "errorMessages": [message], "errors": {}}
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _http_exception_handler(request: Request, exc: StarletteHTTPException):
+    headers = getattr(exc, "headers", None)
+    if request.url.path.startswith("/atlassian"):
+        return JSONResponse(status_code=exc.status_code,
+                            content=_atlassian_error_body(exc.status_code, exc.detail),
+                            headers=headers)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=headers)
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_exception_handler(request: Request, exc: RequestValidationError):
+    if request.url.path.startswith("/atlassian"):
+        msg = "; ".join(e.get("msg", "invalid request") for e in exc.errors()) or "Invalid request"
+        return JSONResponse(status_code=422, content=_atlassian_error_body(422, msg))
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(exc.errors())})
 
 
 @app.middleware("http")
