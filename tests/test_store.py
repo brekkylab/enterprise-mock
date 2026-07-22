@@ -292,3 +292,21 @@ def test_fts_add_docs_is_idempotent(tmp_path):
 def test_fts_add_docs_noop_without_index(tmp_path):
     conn = store.connect_rw(tmp_path / "n.sqlite")       # no build_fts called
     assert store.fts_add_docs(conn, "notion", ["x"]) == 0
+
+
+def test_repo_files_listing_and_kind_isolation(tmp_path):
+    conn = store.connect_rw(tmp_path / "g.sqlite")
+    # two files + one issue in the same repo
+    conn.execute("INSERT INTO github_items(doc_id,repo,author_email,title,content,kind,path,created_ts) "
+                 "VALUES('f1','svc','a@x','a.py','print(1)','file','src/a.py',1)")
+    conn.execute("INSERT INTO github_items(doc_id,repo,author_email,title,content,kind,path,created_ts) "
+                 "VALUES('f2','svc','a@x','b.py','print(2)','file','src/b.py',1)")
+    conn.execute("INSERT INTO github_items(doc_id,repo,author_email,title,content,kind,created_ts) "
+                 "VALUES('i1','svc','a@x','a bug','...', 'issue',1)")
+    conn.commit()
+    files = store.list_repo_files(conn, "svc")
+    assert [f["path"] for f in files] == ["src/a.py", "src/b.py"]     # only files, sorted, no issue
+    assert store.count_repo_files(conn, "svc") == 2
+    got = store.get_repo_file(conn, "svc", "src/b.py")
+    assert got["content"] == "print(2)"
+    assert store.get_repo_file(conn, "svc", "nope.py") is None
