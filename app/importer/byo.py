@@ -378,16 +378,18 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
 
     users_rows = {e: {"email": e, "name": n, "token": _user_token(e)} for e, n in users.items()}
     token_org, token_domain = org_name, org_domain
+    token_admin = settings.admin_token
     if not reset and settings.tokens_path.exists():
         prev = yaml.safe_load(settings.tokens_path.read_text()) or {}
         token_org = prev.get("org", token_org)
         token_domain = prev.get("org_domain", token_domain)
+        token_admin = prev.get("admin_token", settings.admin_token)
         merged = {u["email"]: u for u in prev.get("users", [])}
         for e, row in users_rows.items():
             merged.setdefault(e, row)
         users_rows = merged
     tokens = {"org": token_org, "org_domain": token_domain,
-              "admin_token": settings.admin_token,
+              "admin_token": token_admin,
               "users": [users_rows[k] for k in sorted(users_rows)]}
     settings.tokens_path.write_text(yaml.safe_dump(tokens, sort_keys=False))
     from app import oauth
