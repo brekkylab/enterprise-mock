@@ -8,6 +8,7 @@ from app import store
 from app.acl import Acl
 from app.config import Settings
 from app.routers.slack import _message
+from app.importer import byo
 from app.importer.byo import load
 
 
@@ -302,3 +303,51 @@ def test_s3_byo_rejects_missing_key(tmp_path):
         {"source_type": "s3", "bucket": "b", "title": "t", "content": "c"}))  # no key
     with pytest.raises(SystemExit):
         load(corpus, Settings(data_dir=tmp_path))
+
+
+def _corpus(tmp_path, name, lines):
+    p = tmp_path / name
+    p.write_text("\n".join(json.dumps(x) for x in lines))
+    return p
+
+
+def test_append_preserves_prior_roster_and_org(tmp_path, monkeypatch):
+    monkeypatch.setenv("MOCK_DATA_DIR", str(tmp_path))
+    from app.config import get_settings
+    get_settings.cache_clear()
+    s = get_settings()
+    a = _corpus(tmp_path, "a.jsonl", [
+        {"source_type": "confluence", "title": "A", "content": "alpha",
+         "space": "ENG", "author_email": "ann@acme.com", "visibility": "group", "group": "eng"}])
+    byo.load(a, s, reset=True)
+    prev_users = {u["email"] for u in yaml.safe_load(s.tokens_path.read_text())["users"]}
+    prev_org = yaml.safe_load(s.tokens_path.read_text())["org"]
+    b = _corpus(tmp_path, "b.jsonl", [
+        {"source_type": "notion", "title": "B", "content": "beta rotate",
+         "teamspace": "ops", "author_email": "bob@redwoodinference.com",
+         "visibility": "group", "group": "ops"}])
+    byo.load(b, s, reset=False)
+    tok = yaml.safe_load(s.tokens_path.read_text())
+    now_users = {u["email"] for u in tok["users"]}
+    assert "ann@acme.com" in now_users and "bob@redwoodinference.com" in now_users  # union
+    assert prev_users <= now_users
+    assert tok["org"] == prev_org                                                    # org unchanged
+
+
+def test_append_incremental_fts_finds_new_and_keeps_old(tmp_path, monkeypatch):
+    monkeypatch.setenv("MOCK_DATA_DIR", str(tmp_path))
+    from app.config import get_settings
+    get_settings.cache_clear()
+    s = get_settings()
+    byo.load(_corpus(tmp_path, "a.jsonl", [
+        {"source_type": "confluence", "title": "A", "content": "alpha unique",
+         "space": "ENG", "author_email": "ann@acme.com", "visibility": "group", "group": "eng"}]),
+        s, reset=True)
+    byo.load(_corpus(tmp_path, "b.jsonl", [
+        {"source_type": "notion", "title": "B", "content": "beta unique",
+         "teamspace": "ops", "author_email": "bob@acme.com", "visibility": "group", "group": "ops"}]),
+        s, reset=False)
+    conn = store.connect_ro(s.db_path)
+    assert len(store.search_documents(conn, "beta", "notion")) == 1       # new doc indexed
+    assert len(store.search_documents(conn, "alpha", "confluence")) == 1  # old doc still indexed
+    conn.close()

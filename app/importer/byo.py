@@ -201,6 +201,10 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
             except json.JSONDecodeError:
                 pass  # malformed lines are reported precisely in the main loop below
     org_name, org_domain = _infer_org(_scan, settings)
+    if not reset:
+        row = conn.execute("SELECT id FROM principals WHERE type='org' LIMIT 1").fetchone()
+        if row:
+            org_name = row[0]
     org = org_name
 
     containers: dict[tuple[str, str], str] = {}   # (source_type, name) -> group_id
@@ -210,6 +214,7 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
     grants: list[tuple[str, str, str]] = []        # (doc_id, principal_type, principal_id)
     counts: dict[str, int] = {}
     seen: set[str] = set()
+    fts_ids: dict[str, list[str]] = {}
 
     for lineno, line in enumerate(lines, 1):
         line = line.strip()
@@ -309,6 +314,7 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
                 f"VALUES ({', '.join('?' for _ in names)})",
                 [cols[n] for n in names],
             )
+            fts_ids.setdefault(src, []).append(did)
             counts[src] = counts.get(src, 0) + 1
             for pt, pid in grant_types:
                 grants.append((did, pt, pid))
@@ -364,13 +370,25 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
     for doc_id, ptype, pid in grants:
         conn.execute("INSERT OR REPLACE INTO doc_acl VALUES (?,?,?)", (doc_id, ptype, pid))
     conn.commit()
-    store.build_fts(conn)  # full-text index for search (search.messages / confluence CQL)
+    if reset:
+        store.build_fts(conn)  # full-text index for search (search.messages / confluence CQL)
+    else:
+        for s, ids in fts_ids.items():
+            store.fts_add_docs(conn, s, ids)
 
-    tokens = {
-        "org": org_name, "org_domain": org_domain,
-        "admin_token": settings.admin_token,
-        "users": [{"email": e, "name": n, "token": _user_token(e)} for e, n in sorted(users.items())],
-    }
+    users_rows = {e: {"email": e, "name": n, "token": _user_token(e)} for e, n in users.items()}
+    token_org, token_domain = org_name, org_domain
+    if not reset and settings.tokens_path.exists():
+        prev = yaml.safe_load(settings.tokens_path.read_text()) or {}
+        token_org = prev.get("org", token_org)
+        token_domain = prev.get("org_domain", token_domain)
+        merged = {u["email"]: u for u in prev.get("users", [])}
+        for e, row in users_rows.items():
+            merged.setdefault(e, row)
+        users_rows = merged
+    tokens = {"org": token_org, "org_domain": token_domain,
+              "admin_token": settings.admin_token,
+              "users": [users_rows[k] for k in sorted(users_rows)]}
     settings.tokens_path.write_text(yaml.safe_dump(tokens, sort_keys=False))
     from app import oauth
     oauth.generate(settings, org=org_name)
