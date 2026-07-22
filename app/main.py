@@ -25,7 +25,10 @@ from app.routers import atlassian, github, google, notion, oauth, s3, slack
 
 def _build_index(conn) -> dict:
     idx = {"github": {}, "jira": {}, "confluence": {}, "notion": {}, "s3": {}}
-    for r in conn.execute(f"SELECT doc_id, {store.grouping_col('github')} AS container FROM {store.table('github')}"):
+    # kind='file' rows (source-code docs) are never looked up by number -- excluding them keeps
+    # a file's synthesized number from colliding with (and shadowing) a real issue/PR's.
+    for r in conn.execute(f"SELECT doc_id, {store.grouping_col('github')} AS container "
+                          f"FROM {store.table('github')} WHERE kind IS NULL OR kind != 'file'"):
         idx["github"][(r["container"], synth.github_number(r["doc_id"]))] = r["doc_id"]
     for r in conn.execute(f"SELECT doc_id, {store.grouping_col('jira')} AS container FROM {store.table('jira')}"):
         idx["jira"][synth.jira_key(r["doc_id"], synth.jira_project_key(r["container"]))] = r["doc_id"]

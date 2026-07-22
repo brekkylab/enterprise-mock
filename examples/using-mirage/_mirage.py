@@ -22,6 +22,16 @@ constant (which any module imported later will read) **and** every already-impor
 carries a copy. That makes the redirect order-independent — call it once before building the
 Google resources.
 
+GitHub is the same story with one constant: ``GitHubConfig`` (mirage 0.0.3) has no ``base_url``
+field, and every call goes through ``mirage.core.github._client.github_url()``, which reads the
+module-level ``API_BASE = "https://api.github.com"``. Unlike Google's constants, nothing else in
+mirage imports ``API_BASE`` by value — every consumer (``repo.py``, ``tree.py``, ``read.py``,
+``search.py``) calls the client's ``github_get``/``github_get_sync`` functions instead, and those
+functions look up ``API_BASE`` as a plain module global at call time. So patching the one source
+constant is sufficient; ``point_github_at`` still sweeps already-imported ``mirage.core.*``
+modules for a same-named copy, mirroring ``point_google_at``, in case a future mirage version
+changes that.
+
 This module also re-exports the serve/credential helpers from the sibling
 ``using-official-sdk/_mockserver.py`` so the mirage scripts share the same ``--url`` /
 ``--user`` / ``--token`` behavior and the same local-fallback mock.
@@ -57,7 +67,7 @@ try:  # best-effort; env-var path still applies if internals change
 except Exception:  # noqa: BLE001
     pass
 
-__all__ = ["point_google_at", "slack_base_url", "notion_base_url", "s3_base_url",
+__all__ = ["point_google_at", "point_github_at", "slack_base_url", "notion_base_url", "s3_base_url",
            "serve_or_connect", "google_oauth_user", "lines", "run_mirage", "FUSE_HELP"]
 
 
@@ -152,6 +162,31 @@ def point_google_at(base_url: str) -> None:
     import mirage.core.google._client  # noqa: F401
 
     # Patch the source constants + any mirage.core.* module already holding a copy.
+    for mod in list(sys.modules.values()):
+        if not getattr(mod, "__name__", "").startswith("mirage.core."):
+            continue
+        for const, value in overrides.items():
+            if hasattr(mod, const):
+                setattr(mod, const, value)
+
+
+def point_github_at(base_url: str) -> None:
+    """Redirect mirage's GitHub connector (repo tree/contents/blobs) at the mock.
+
+    ``GitHubConfig`` has no ``base_url`` field (unlike Slack/Notion/S3); mirage hardcodes
+    ``mirage.core.github._client.API_BASE = "https://api.github.com"`` and every call goes
+    through that module's ``github_url()``, which reads ``API_BASE`` as a plain global at call
+    time — so patching the one source constant is enough. We still sweep already-imported
+    ``mirage.core.*`` modules for a same-named copy, exactly like ``point_google_at``, so the
+    redirect stays order-independent even if a future mirage version copies the constant by
+    value. Call once, before constructing ``GitHubResource`` (its constructor makes synchronous
+    HTTP calls to fetch the default branch and the tree).
+    """
+    base = base_url.rstrip("/")
+    overrides = {"API_BASE": f"{base}/github"}
+
+    import mirage.core.github._client  # noqa: F401
+
     for mod in list(sys.modules.values()):
         if not getattr(mod, "__name__", "").startswith("mirage.core."):
             continue

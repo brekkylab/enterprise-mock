@@ -9,6 +9,10 @@ pip install -e ".[examples]"
 python examples/using-official-sdk/slack.py     # or gmail.py, gdrive.py, github.py, jira.py, confluence.py, notion.py, s3.py
 ```
 
+`github.py` lists a repo's issues/PRs, then crawls its **code**: `repo.get_git_tree(...,
+recursive=True)` for the file tree, `repo.get_contents(path)` to read one file, and
+`repo.get_readme()` — the mock serves the real git `trees`/`contents`/`blobs`/`readme` shapes.
+
 Pass `--url http://host:port` to point a script at an already-running mock instead; if it's
 omitted or unreachable, the script falls back to spinning up its own.
 

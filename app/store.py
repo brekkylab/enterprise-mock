@@ -122,9 +122,10 @@ CREATE TABLE IF NOT EXISTS github_items (
     merged_at TEXT, head_ref TEXT, base_ref TEXT, reviews TEXT, reactions TEXT,
     created_ts INTEGER NOT NULL, updated_ts INTEGER,
     closed_ts INTEGER, closed_by TEXT, merged_by TEXT, milestone TEXT, requested_reviewers TEXT,
-    owner_display TEXT
+    owner_display TEXT, path TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_github_repo ON github_items(repo);
+CREATE INDEX IF NOT EXISTS idx_github_repo_path ON github_items(repo, path);
 
 CREATE TABLE IF NOT EXISTS jira_issues (
     doc_id TEXT PRIMARY KEY, project TEXT NOT NULL, author_email TEXT NOT NULL,
@@ -229,6 +230,15 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
     # live server is reading rides through the reader's lock instead of a spurious "locked".
     if busy_ms:
         conn.execute(f"PRAGMA busy_timeout={busy_ms}")
+    # Self-heal a github_items table built before the `path` column existed: executescript(SCHEMA)
+    # below runs `CREATE INDEX IF NOT EXISTS idx_github_repo_path ON github_items(repo, path)`, and
+    # IF NOT EXISTS only guards the index name -- it still raises OperationalError if the table
+    # exists but lacks the referenced column. Idempotent: no-op on a fresh DB (table absent) or a
+    # DB that already has the column.
+    try:
+        conn.execute("ALTER TABLE github_items ADD COLUMN path TEXT")
+    except sqlite3.OperationalError:
+        pass  # table absent (fresh DB) or column already present
     conn.executescript(SCHEMA)
     return conn
 
@@ -783,6 +793,27 @@ def gmail_thread(conn, thread_id, visible_ids=None) -> list[sqlite3.Row]:
     sql += clause + " ORDER BY thread_seq"
     params += cparams
     return conn.execute(sql, params).fetchall()
+
+
+# --- GitHub file items (kind='file') ----------------------------------------
+
+def list_repo_files(conn, repo, visible_ids=None, limit=10_000, offset=0) -> list[sqlite3.Row]:
+    clause, cp = _acl_clause("github_items", visible_ids)
+    sql = ("SELECT * FROM github_items WHERE repo = ? AND kind = 'file'" + clause +
+           " ORDER BY path LIMIT ? OFFSET ?")
+    return conn.execute(sql, [repo, *cp, limit, offset]).fetchall()
+
+
+def count_repo_files(conn, repo, visible_ids=None) -> int:
+    clause, cp = _acl_clause("github_items", visible_ids)
+    return conn.execute("SELECT COUNT(*) FROM github_items WHERE repo = ? AND kind = 'file'" + clause,
+                        [repo, *cp]).fetchone()[0]
+
+
+def get_repo_file(conn, repo, path, visible_ids=None) -> sqlite3.Row | None:
+    clause, cp = _acl_clause("github_items", visible_ids)
+    return conn.execute("SELECT * FROM github_items WHERE repo = ? AND kind = 'file' AND path = ?" + clause,
+                        [repo, path, *cp]).fetchone()
 
 
 # --- grouping units (channels/mailboxes/folders/repos/projects/spaces) & principals ---

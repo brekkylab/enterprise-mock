@@ -241,6 +241,45 @@ def test_connect_rw_busy_timeout(tmp_path):
         c.close()
 
 
+def test_connect_rw_self_heals_missing_path_column(tmp_path):
+    """A pre-existing github_items table built before the `path` column existed must not make
+    connect_rw's executescript(SCHEMA) blow up on `CREATE INDEX ... ON github_items(repo, path)`
+    (IF NOT EXISTS only guards the index name, not the referenced column)."""
+    p = tmp_path / "old.sqlite"
+    conn = sqlite3.connect(p)
+    conn.execute(
+        "CREATE TABLE github_items ("
+        "doc_id TEXT PRIMARY KEY, repo TEXT NOT NULL, author_email TEXT NOT NULL, "
+        "title TEXT NOT NULL, content TEXT NOT NULL, kind TEXT, state TEXT, labels TEXT, "
+        "assignees TEXT, merged_at TEXT, head_ref TEXT, base_ref TEXT, reviews TEXT, "
+        "reactions TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER, closed_ts INTEGER, "
+        "closed_by TEXT, merged_by TEXT, milestone TEXT, requested_reviewers TEXT, owner_display TEXT"
+        ")"
+    )
+    conn.execute("INSERT INTO github_items(doc_id, repo, author_email, title, content, created_ts) "
+                "VALUES ('i1', 'svc', 'a@x', 'a bug', '...', 1)")
+    conn.commit()
+    conn.close()
+
+    reconn = store.connect_rw(p)  # must not raise
+    try:
+        cols = {r[1] for r in reconn.execute("PRAGMA table_info(github_items)")}
+        assert "path" in cols
+        # pre-existing row survives the migration
+        assert reconn.execute("SELECT doc_id FROM github_items WHERE doc_id = 'i1'").fetchone()
+    finally:
+        reconn.close()
+
+
+def test_connect_rw_fresh_db_still_works(tmp_path):
+    conn = store.connect_rw(tmp_path / "fresh.sqlite")
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(github_items)")}
+        assert "path" in cols
+    finally:
+        conn.close()
+
+
 def test_connect_ro_tuning(sample_settings):
     # tuned connection applies the pragmas; a plain one keeps sqlite defaults (tests unaffected)
     c = store.connect_ro(sample_settings.db_path, mmap_mb=64, cache_mb=16, temp_memory=True)
@@ -292,3 +331,21 @@ def test_fts_add_docs_is_idempotent(tmp_path):
 def test_fts_add_docs_noop_without_index(tmp_path):
     conn = store.connect_rw(tmp_path / "n.sqlite")       # no build_fts called
     assert store.fts_add_docs(conn, "notion", ["x"]) == 0
+
+
+def test_repo_files_listing_and_kind_isolation(tmp_path):
+    conn = store.connect_rw(tmp_path / "g.sqlite")
+    # two files + one issue in the same repo
+    conn.execute("INSERT INTO github_items(doc_id,repo,author_email,title,content,kind,path,created_ts) "
+                 "VALUES('f1','svc','a@x','a.py','print(1)','file','src/a.py',1)")
+    conn.execute("INSERT INTO github_items(doc_id,repo,author_email,title,content,kind,path,created_ts) "
+                 "VALUES('f2','svc','a@x','b.py','print(2)','file','src/b.py',1)")
+    conn.execute("INSERT INTO github_items(doc_id,repo,author_email,title,content,kind,created_ts) "
+                 "VALUES('i1','svc','a@x','a bug','...', 'issue',1)")
+    conn.commit()
+    files = store.list_repo_files(conn, "svc")
+    assert [f["path"] for f in files] == ["src/a.py", "src/b.py"]     # only files, sorted, no issue
+    assert store.count_repo_files(conn, "svc") == 2
+    got = store.get_repo_file(conn, "svc", "src/b.py")
+    assert got["content"] == "print(2)"
+    assert store.get_repo_file(conn, "svc", "nope.py") is None

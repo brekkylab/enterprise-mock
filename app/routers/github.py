@@ -135,7 +135,7 @@ async def search_issues(request: Request,
         cand = store.search_documents(conn, free, "github", ids, limit=10_000, container=container)
     else:
         cand = store.list_documents(conn, "github", container, ids, limit=10_000)
-    matched = [r for r in cand if _issue_qual_match(r, quals)]
+    matched = [r for r in cand if r["kind"] != "file" and _issue_qual_match(r, quals)]
     page, per_page = clamp_page(page, per_page,
                                 get_settings().default_page_size, get_settings().max_page_size)
     start = (page - 1) * per_page
@@ -190,16 +190,19 @@ async def list_issues(owner: str, repo: str, request: Request,
     ids = auth.visible_ids(request, caller)
     if store.get_container(conn, "github", repo) is None:
         raise HTTPException(status_code=404, detail="Not Found")
+    state_filter = state if state != "all" else None
+    # kind='file' docs (source code, not issues/PRs) never appear here — fetch generously and
+    # filter+paginate in Python, mirroring list_pulls below.
+    all_rows = [r for r in store.list_documents(conn, "github", repo, ids, limit=10_000, state=state_filter)
+                if r["kind"] != "file"]
     page, per_page = clamp_page(page, per_page,
                                 get_settings().default_page_size, get_settings().max_page_size)
-    state_filter = state if state != "all" else None
-    total = store.count_documents(conn, "github", repo, ids, state=state_filter)
-    rows = store.list_documents(conn, "github", repo, ids, limit=per_page,
-                                offset=(page - 1) * per_page, state=state_filter)
+    start = (page - 1) * per_page
+    rows = all_rows[start:start + per_page]
     # like the real API, /issues returns issues AND PRs (PRs carry a pull_request marker)
     ab = _api_base(request)
     body = [_issue_obj(conn, owner, repo, r, ab) for r in rows]
-    return _paged(request, total, {"state": state}, body, page, per_page)
+    return _paged(request, len(all_rows), {"state": state}, body, page, per_page)
 
 
 @router.get("/repos/{owner}/{repo}/issues/{number}", response_model=GitHubIssue)
@@ -285,15 +288,119 @@ async def pull_reviews(owner: str, repo: str, number: int, request: Request):
     return out
 
 
-@router.get("/repos/{owner}/{repo}/readme")
-async def get_readme(owner: str, repo: str, request: Request):
+@router.get("/repos/{owner}/{repo}/git/trees/{ref}")
+async def get_tree(owner: str, repo: str, ref: str, request: Request,
+                   recursive: str | None = Query(None)):
+    """The repo's file set as a git tree (real API shape). We keep no history, so any
+    `ref` — a branch name or a sha from /branches or /commits — resolves to the repo's
+    current files. `recursive` (any truthy value, GitHub-style) returns every blob/tree
+    entry; otherwise only the entries directly under root."""
+    conn = auth.conn(request)
+    caller = _require(request)
+    ids = auth.visible_ids(request, caller)
+    if store.get_container(conn, "github", repo) is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    ab = _api_base(request)
+    rows = store.list_repo_files(conn, repo, ids)
+    entries = _tree_from_paths(owner, repo, rows, ab)
+    if not _truthy(recursive):
+        entries = [e for e in entries if "/" not in e["path"]]
+    tree_sha = _repo_tree_sha(repo)
+    return {"sha": tree_sha, "url": f"{ab}/repos/{owner}/{repo}/git/trees/{tree_sha}",
+            "tree": entries, "truncated": False}
+
+
+async def _contents_response(owner: str, repo: str, path: str, request: Request):
+    conn = auth.conn(request)
+    caller = _require(request)
+    ids = auth.visible_ids(request, caller)
+    if store.get_container(conn, "github", repo) is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    ab = _api_base(request)
+    path = path.strip("/")
+    if path:
+        row = store.get_repo_file(conn, repo, path, ids)
+        if row is not None:
+            return _file_obj(owner, repo, row, ab)
+    rows = store.list_repo_files(conn, repo, ids)
+    entries = _tree_from_paths(owner, repo, rows, ab)
+    is_dir = path == "" or any(e["path"] == path or e["path"].startswith(path + "/") for e in entries)
+    if not is_dir:
+        raise HTTPException(status_code=404, detail="Not Found")
+    children = [e for e in entries if _dirname(e["path"]) == path]
+    return [_contents_child(owner, repo, e, ab) for e in children]
+
+
+@router.get("/repos/{owner}/{repo}/contents")
+async def get_contents_root(owner: str, repo: str, request: Request):
+    return await _contents_response(owner, repo, "", request)
+
+
+@router.get("/repos/{owner}/{repo}/contents/{path:path}")
+async def get_contents(owner: str, repo: str, path: str, request: Request):
+    return await _contents_response(owner, repo, path, request)
+
+
+@router.get("/repos/{owner}/{repo}/git/blobs/{sha}")
+async def get_blob(owner: str, repo: str, sha: str, request: Request):
+    conn = auth.conn(request)
+    caller = _require(request)
+    ids = auth.visible_ids(request, caller)
+    if store.get_container(conn, "github", repo) is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    row = next((r for r in store.list_repo_files(conn, repo, ids) if _blob_sha(r["content"]) == sha), None)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    content = row["content"]
+    ab = _api_base(request)
+    return {"sha": sha, "node_id": synth.node_id("Blob", sha[:12]), "size": len(content.encode()),
+            "encoding": "base64", "content": base64.b64encode(content.encode()).decode(),
+            "url": f"{ab}/repos/{owner}/{repo}/git/blobs/{sha}"}
+
+
+@router.get("/repos/{owner}/{repo}/branches/{branch}")
+async def get_branch(owner: str, repo: str, branch: str, request: Request):
     conn = auth.conn(request)
     _require(request)
     if store.get_container(conn, "github", repo) is None:
         raise HTTPException(status_code=404, detail="Not Found")
+    ab = _api_base(request)
+    commit_sha, tree_sha = _repo_commit_sha(repo), _repo_tree_sha(repo)
+    return {"name": branch, "protected": False,
+            "commit": {"sha": commit_sha, "commit": {"tree": {"sha": tree_sha}},
+                       "url": f"{ab}/repos/{owner}/{repo}/commits/{commit_sha}"}}
+
+
+@router.get("/repos/{owner}/{repo}/commits/{sha}")
+async def get_commit(owner: str, repo: str, sha: str, request: Request):
+    conn = auth.conn(request)
+    _require(request)
+    if store.get_container(conn, "github", repo) is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    ab = _api_base(request)
+    tree_sha = _repo_tree_sha(repo)
+    return {"sha": sha, "node_id": synth.node_id("Commit", sha[:12]),
+            "commit": {"tree": {"sha": tree_sha, "url": f"{ab}/repos/{owner}/{repo}/git/trees/{tree_sha}"},
+                       "message": f"Snapshot of {repo}",
+                       "url": f"{ab}/repos/{owner}/{repo}/git/commits/{sha}"},
+            "url": f"{ab}/repos/{owner}/{repo}/commits/{sha}",
+            "html_url": f"https://github.com/{owner}/{repo}/commit/{sha}"}
+
+
+@router.get("/repos/{owner}/{repo}/readme")
+async def get_readme(owner: str, repo: str, request: Request):
+    conn = auth.conn(request)
+    caller = _require(request)
+    ids = auth.visible_ids(request, caller)
+    if store.get_container(conn, "github", repo) is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    ab = _api_base(request)
+    row = (store.get_repo_file(conn, repo, "README.md", ids) or
+           store.get_repo_file(conn, repo, "readme.md", ids))
+    if row is not None:
+        return _file_obj(owner, repo, row, ab)
     text = f"# {repo}\n\nRepository `{owner}/{repo}`.\n"
     sha = hashlib.sha1(text.encode()).hexdigest()
-    ab = _api_base(request)
     url = f"{ab}/repos/{owner}/{repo}/contents/README.md"
     return {"type": "file", "name": "README.md", "path": "README.md",
             "encoding": "base64", "content": base64.b64encode(text.encode()).decode(),
@@ -347,6 +454,90 @@ async def list_repo_teams(owner: str, repo: str, request: Request):
              "slug": c["group_id"], "permission": "pull"}]
 
 
+# --- repo file tree / contents / blobs ------------------------------------------
+
+def _truthy(v: str | None) -> bool:
+    """GitHub's `?recursive=` accepts any non-empty, non-'0'/'false' value as true."""
+    return v is not None and v.lower() not in ("", "0", "false")
+
+
+def _blob_sha(content: str) -> str:
+    return hashlib.sha1(content.encode()).hexdigest()
+
+
+def _repo_tree_sha(repo: str) -> str:
+    return hashlib.sha1(f"tree:{repo}".encode()).hexdigest()
+
+
+def _repo_commit_sha(repo: str) -> str:
+    return hashlib.sha1(f"commit:{repo}".encode()).hexdigest()
+
+
+def _dir_sha(repo: str, dirpath: str) -> str:
+    return hashlib.sha1(f"tree:{repo}:{dirpath}".encode()).hexdigest()
+
+
+def _dirname(path: str) -> str:
+    return path.rsplit("/", 1)[0] if "/" in path else ""
+
+
+def _tree_from_paths(owner: str, repo: str, files, api_base: str = "") -> list[dict]:
+    """Flat repo file rows -> full recursive git-tree entries: a blob per file plus an
+    inferred `tree` (directory) entry for every distinct path prefix. Deterministic and
+    sorted by path; callers needing only the top level filter out any path containing '/'."""
+    entries: dict[str, dict] = {}
+    dirs: set[str] = set()
+    for row in files:
+        path, content = row["path"], row["content"]
+        sha = _blob_sha(content)
+        entries[path] = {"path": path, "mode": "100644", "type": "blob", "sha": sha,
+                         "size": len(content.encode()),
+                         "url": f"{api_base}/repos/{owner}/{repo}/git/blobs/{sha}"}
+        parts = path.split("/")[:-1]
+        for i in range(1, len(parts) + 1):
+            dirs.add("/".join(parts[:i]))
+    for d in dirs:
+        dsha = _dir_sha(repo, d)
+        entries[d] = {"path": d, "mode": "040000", "type": "tree", "sha": dsha,
+                     "url": f"{api_base}/repos/{owner}/{repo}/git/trees/{dsha}"}
+    return [entries[p] for p in sorted(entries)]
+
+
+def _file_obj(owner: str, repo: str, row, api_base: str = "") -> dict:
+    """The Contents API's file-object shape (base64 body), used by both /contents/{path}
+    and /readme — real GitHub serves both from the same underlying object."""
+    content = row["content"]
+    path = row["path"]
+    name = path.rsplit("/", 1)[-1]
+    sha = _blob_sha(content)
+    url = f"{api_base}/repos/{owner}/{repo}/contents/{path}"
+    git_url = f"{api_base}/repos/{owner}/{repo}/git/blobs/{sha}"
+    html_url = f"https://github.com/{owner}/{repo}/blob/main/{path}"
+    download_url = f"https://raw.githubusercontent.com/{owner}/{repo}/main/{path}"
+    return {"type": "file", "name": name, "path": path,
+            "encoding": "base64", "content": base64.b64encode(content.encode()).decode(),
+            "size": len(content.encode()), "sha": sha, "node_id": synth.node_id("Blob", sha[:12]),
+            "url": url, "git_url": git_url, "html_url": html_url, "download_url": download_url,
+            "_links": {"self": url, "git": git_url, "html": html_url}}
+
+
+def _contents_child(owner: str, repo: str, entry: dict, api_base: str = "") -> dict:
+    """One element of a directory listing (real Contents API array shape)."""
+    is_file = entry["type"] == "blob"
+    name = entry["path"].rsplit("/", 1)[-1]
+    self_url = f"{api_base}/repos/{owner}/{repo}/contents/{entry['path']}"
+    git_url = (f"{api_base}/repos/{owner}/{repo}/git/blobs/{entry['sha']}" if is_file
+              else f"{api_base}/repos/{owner}/{repo}/git/trees/{entry['sha']}")
+    html_url = f"https://github.com/{owner}/{repo}/{'blob' if is_file else 'tree'}/main/{entry['path']}"
+    return {"name": name, "path": entry["path"], "sha": entry["sha"],
+            "size": entry.get("size", 0), "url": self_url, "html_url": html_url,
+            "git_url": git_url,
+            "download_url": (f"https://raw.githubusercontent.com/{owner}/{repo}/main/{entry['path']}"
+                             if is_file else None),
+            "type": "file" if is_file else "dir",
+            "_links": {"self": self_url, "git": git_url, "html": html_url}}
+
+
 # --- object builders ------------------------------------------------------------
 
 def _gh_user(email: str, api_base: str = "") -> dict:
@@ -390,7 +581,10 @@ def _repo_obj(conn, owner: str, name: str, api_base: str = "") -> dict:
 
 def _resolve(request: Request, conn, repo: str, number: int, ids):
     doc_id = request.app.state.index["github"].get((repo, number))
-    return store.get_document(conn, "github", doc_id, visible_ids=ids) if doc_id else None
+    row = store.get_document(conn, "github", doc_id, visible_ids=ids) if doc_id else None
+    # a 'file' doc's synthesized number lives in the same index but must never surface as
+    # an issue/PR (it has no title/body/state in the issue sense).
+    return row if row is not None and row["kind"] != "file" else None
 
 
 def _milestone(row, owner, repo, api_base):
