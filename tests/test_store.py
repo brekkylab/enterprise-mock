@@ -8,6 +8,8 @@ tuning uses hand-built / SAMPLE DBs.
 ACL-filtered reads live in test_acl.py (the ACL is the subject there) and FTS search in
 test_search.py (search is its own sub-domain); this file covers the plain store surface.
 """
+import sqlite3
+
 import pytest
 
 from app import store
@@ -154,3 +156,40 @@ def test_connect_ro_tuning(sample_settings):
         assert d.execute("PRAGMA mmap_size").fetchone()[0] == 0
     finally:
         d.close()
+
+
+# --- incremental FTS indexing --------------------------------------------------
+
+def _mini_db(tmp_path):
+    conn = store.connect_rw(tmp_path / "m.sqlite")
+    conn.execute("INSERT INTO notion_pages(doc_id,teamspace,author_email,title,content,created_ts) "
+                 "VALUES('n1','eng','a@x.com','Alpha runbook','deploy alpha service',1)")
+    conn.commit()
+    store.build_fts(conn)
+    return conn
+
+
+def test_fts_add_docs_indexes_new_without_dropping_old(tmp_path):
+    conn = _mini_db(tmp_path)
+    # a new page inserted AFTER the initial build is not searchable until indexed
+    conn.execute("INSERT INTO notion_pages(doc_id,teamspace,author_email,title,content,created_ts) "
+                 "VALUES('n2','eng','a@x.com','Beta guide','rotate beta credentials',2)")
+    conn.commit()
+    assert store.search_documents(conn, "beta", "notion") == []          # not yet indexed
+    n = store.fts_add_docs(conn, "notion", ["n2"])
+    assert n == 1
+    got = {r["doc_id"] for r in store.search_documents(conn, "beta", "notion")}
+    assert "n2" in got
+    # the original doc is still searchable (index not clobbered)
+    assert {r["doc_id"] for r in store.search_documents(conn, "alpha", "notion")} == {"n1"}
+
+
+def test_fts_add_docs_is_idempotent(tmp_path):
+    conn = _mini_db(tmp_path)
+    store.fts_add_docs(conn, "notion", ["n1"])          # re-index existing doc
+    assert len(store.search_documents(conn, "alpha", "notion")) == 1     # no duplicate row
+
+
+def test_fts_add_docs_noop_without_index(tmp_path):
+    conn = store.connect_rw(tmp_path / "n.sqlite")       # no build_fts called
+    assert store.fts_add_docs(conn, "notion", ["x"]) == 0

@@ -445,6 +445,26 @@ def build_fts(conn) -> bool:
     return True
 
 
+def fts_add_docs(conn, source_type: str, doc_ids: list[str]) -> int:
+    """Incrementally (re)index specific docs in ``docs_fts`` — delete-then-insert per doc_id so it is
+    idempotent (an upsert). Used by append imports so a small add doesn't trigger a full rebuild over
+    the whole corpus. No-op (returns 0) if the FTS index isn't present or ``doc_ids`` is empty."""
+    if not doc_ids or not _has_fts(conn):
+        return 0
+    tbl, tag = table(source_type), _src_tag(source_type)
+    n = 0
+    for i in range(0, len(doc_ids), 900):
+        chunk = doc_ids[i:i + 900]
+        marks = ",".join("?" for _ in chunk)
+        conn.execute(f"DELETE FROM docs_fts WHERE doc_id IN ({marks})", chunk)
+        conn.execute(f"INSERT INTO docs_fts(doc_id, src, title, content) "
+                     f"SELECT doc_id, '{tag}', title, content FROM {tbl} WHERE doc_id IN ({marks})",
+                     chunk)
+        n += len(chunk)
+    conn.commit()
+    return n
+
+
 def _fts_has_src(conn) -> bool:
     """True if docs_fts carries the indexed ``src`` column (new schema). Lets the query layer
     use the fast source-intersection path when the index has been rebuilt, and fall back to the
