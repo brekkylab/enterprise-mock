@@ -8,6 +8,8 @@ tuning uses hand-built / SAMPLE DBs.
 ACL-filtered reads live in test_acl.py (the ACL is the subject there) and FTS search in
 test_search.py (search is its own sub-domain); this file covers the plain store surface.
 """
+import sqlite3
+
 import pytest
 
 from app import store
@@ -130,6 +132,105 @@ def test_jcol_parses_json_columns(db):
     assert store.jcol(issue, "no_such_col", default=["x"]) == ["x"]
 
 
+# --- S3: SQL-pushed prefix / keyset pagination / ACL scoping --------------------
+
+def _s3_mini_db(tmp_path):
+    """A hand-built DB with two buckets and a handful of objects — enough to exercise
+    prefix/keyset/ACL without going through the full BYO importer."""
+    conn = store.connect_rw(tmp_path / "s3.sqlite")
+    rows = [
+        # (doc_id, bucket, key)
+        ("d1", "b", "logs/2026/01/a.json"),
+        ("d2", "b", "logs/2026/01/b.json"),
+        ("d3", "b", "logs/2026/02/a.json"),
+        ("d4", "b", "notes/readme.md"),
+        ("d5", "other", "logs/2026/01/a.json"),   # same key, different bucket
+    ]
+    for doc_id, bucket, key in rows:
+        conn.execute(
+            "INSERT INTO s3_objects(doc_id, bucket, author_email, title, content, key, "
+            "created_ts) VALUES (?,?,?,?,?,?,1)",
+            (doc_id, bucket, "a@x.com", key, "body", key))
+    # d2 is ACL-restricted to group 'eng'; everything else is unrestricted (no doc_acl row ->
+    # _acl_clause's EXISTS check only bites rows it has an entry for).
+    conn.execute("INSERT INTO doc_acl VALUES ('d2','group','eng')")
+    conn.commit()
+    return conn
+
+
+def test_list_s3_objects_prefix_and_order(tmp_path):
+    conn = _s3_mini_db(tmp_path)
+    rows = store.list_s3_objects(conn, "b", prefix="logs/2026/01/")
+    assert [r["key"] for r in rows] == ["logs/2026/01/a.json", "logs/2026/01/b.json"]
+    # a bucket-only listing stays sorted and scoped to that bucket (d5 in "other" excluded)
+    rows = store.list_s3_objects(conn, "b")
+    assert [r["key"] for r in rows] == ["logs/2026/01/a.json", "logs/2026/01/b.json",
+                                        "logs/2026/02/a.json", "notes/readme.md"]
+
+
+def test_list_s3_objects_prefix_no_like_wildcard_semantics(tmp_path):
+    conn = _s3_mini_db(tmp_path)
+    # the prefix filter is a byte range, not a LIKE pattern: '_'/'%' are ordinary bytes, not
+    # wildcards, so a prefix containing them just fails to match (no escaping needed or done)
+    assert store.list_s3_objects(conn, "b", prefix="logs_2026") == []
+    assert store.list_s3_objects(conn, "b", prefix="logs%") == []
+
+
+def test_list_s3_objects_prefix_uses_index_range_not_like(tmp_path):
+    """Fix 1 (perf): the prefix filter must compile to an explicit key range on idx_s3_key —
+    NOT a LIKE scan — since SQLite only range-optimizes a LIKE under case_sensitive_like=ON,
+    which this repo must not set (list_drive_by_name needs the default case-insensitive LIKE)."""
+    conn = _s3_mini_db(tmp_path)
+    prefix = "logs/2026/01/"
+    succ = store.key_successor(prefix)
+    plan = conn.execute(
+        "EXPLAIN QUERY PLAN SELECT * FROM s3_objects WHERE bucket = ? AND key >= ? AND key < ? "
+        "ORDER BY key ASC", ("b", prefix, succ)).fetchall()
+    detail = " | ".join(row[-1] for row in plan)
+    assert "idx_s3_key" in detail
+    assert "LIKE" not in detail.upper()
+    flat = detail.replace(" ", "")
+    assert "key>" in flat and "key<" in flat
+
+
+def test_list_s3_objects_prefix_case_sensitive(tmp_path):
+    """Fix 2 (correctness): a direct consequence of the byte-range prefix filter (BINARY
+    collation) — prefix matching is case-SENSITIVE, matching real S3's byte-exact semantics.
+    Objects live only under the lowercase "logs/" prefix; an uppercase "LOGS/" prefix query must
+    not match them (a case-insensitive LIKE would wrongly match)."""
+    conn = store.connect_rw(tmp_path / "s3_case.sqlite")
+    for doc_id, key in [("c1", "logs/a.json"), ("c2", "logs/b.json")]:
+        conn.execute(
+            "INSERT INTO s3_objects(doc_id, bucket, author_email, title, content, key, "
+            "created_ts) VALUES (?,?,?,?,?,?,1)",
+            (doc_id, "b", "a@x.com", key, "body", key))
+    conn.commit()
+    assert [r["key"] for r in store.list_s3_objects(conn, "b", prefix="LOGS/")] == []
+    assert [r["key"] for r in store.list_s3_objects(conn, "b", prefix="logs/")] == \
+        ["logs/a.json", "logs/b.json"]
+
+
+def test_list_s3_objects_keyset_pagination(tmp_path):
+    conn = _s3_mini_db(tmp_path)
+    page1 = store.list_s3_objects(conn, "b", limit=2)
+    assert [r["key"] for r in page1] == ["logs/2026/01/a.json", "logs/2026/01/b.json"]
+    page2 = store.list_s3_objects(conn, "b", start_after=page1[-1]["key"], limit=2)
+    assert [r["key"] for r in page2] == ["logs/2026/02/a.json", "notes/readme.md"]
+    # keyset pagination never re-returns the boundary key, and pages don't overlap
+    assert not {r["key"] for r in page1} & {r["key"] for r in page2}
+
+
+def test_list_s3_objects_acl_scoped(tmp_path):
+    conn = _s3_mini_db(tmp_path)
+    all_keys = {r["key"] for r in store.list_s3_objects(conn, "b", prefix="logs/2026/01/")}
+    assert all_keys == {"logs/2026/01/a.json", "logs/2026/01/b.json"}
+    scoped_keys = {r["key"] for r in
+                  store.list_s3_objects(conn, "b", prefix="logs/2026/01/", visible_ids={"eng"})}
+    assert scoped_keys == {"logs/2026/01/b.json"}          # only d2, granted to group 'eng'
+    none_visible = store.list_s3_objects(conn, "b", prefix="logs/2026/01/", visible_ids={"nobody"})
+    assert none_visible == []
+
+
 # --- connection tuning ----------------------------------------------------------
 
 def test_connect_rw_busy_timeout(tmp_path):
@@ -154,3 +255,40 @@ def test_connect_ro_tuning(sample_settings):
         assert d.execute("PRAGMA mmap_size").fetchone()[0] == 0
     finally:
         d.close()
+
+
+# --- incremental FTS indexing --------------------------------------------------
+
+def _mini_db(tmp_path):
+    conn = store.connect_rw(tmp_path / "m.sqlite")
+    conn.execute("INSERT INTO notion_pages(doc_id,teamspace,author_email,title,content,created_ts) "
+                 "VALUES('n1','eng','a@x.com','Alpha runbook','deploy alpha service',1)")
+    conn.commit()
+    store.build_fts(conn)
+    return conn
+
+
+def test_fts_add_docs_indexes_new_without_dropping_old(tmp_path):
+    conn = _mini_db(tmp_path)
+    # a new page inserted AFTER the initial build is not searchable until indexed
+    conn.execute("INSERT INTO notion_pages(doc_id,teamspace,author_email,title,content,created_ts) "
+                 "VALUES('n2','eng','a@x.com','Beta guide','rotate beta credentials',2)")
+    conn.commit()
+    assert store.search_documents(conn, "beta", "notion") == []          # not yet indexed
+    n = store.fts_add_docs(conn, "notion", ["n2"])
+    assert n == 1
+    got = {r["doc_id"] for r in store.search_documents(conn, "beta", "notion")}
+    assert "n2" in got
+    # the original doc is still searchable (index not clobbered)
+    assert {r["doc_id"] for r in store.search_documents(conn, "alpha", "notion")} == {"n1"}
+
+
+def test_fts_add_docs_is_idempotent(tmp_path):
+    conn = _mini_db(tmp_path)
+    store.fts_add_docs(conn, "notion", ["n1"])          # re-index existing doc
+    assert len(store.search_documents(conn, "alpha", "notion")) == 1     # no duplicate row
+
+
+def test_fts_add_docs_noop_without_index(tmp_path):
+    conn = store.connect_rw(tmp_path / "n.sqlite")       # no build_fts called
+    assert store.fts_add_docs(conn, "notion", ["x"]) == 0

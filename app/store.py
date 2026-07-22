@@ -310,6 +310,52 @@ def list_documents(conn, source_type, container=None, visible_ids=None, limit=10
     return conn.execute(sql, params).fetchall()
 
 
+def key_successor(s: str) -> str:
+    """The lexicographically-smallest string that is greater than every string with prefix
+    ``s`` (increments ``s``'s last character). Used both to turn an S3 prefix filter into a
+    half-open byte range (``key >= s AND key < key_successor(s)``) and, in the ListObjectsV2
+    router, to build a keyset cursor that skips an entire rolled-up CommonPrefixes group in one
+    bound. Undefined for an empty string — callers guard the empty-prefix case separately."""
+    return s[:-1] + chr(ord(s[-1]) + 1)
+
+
+def list_s3_objects(conn, bucket, *, prefix="", start_after=None, start_at=None, visible_ids=None,
+                    limit=1000) -> list[sqlite3.Row]:
+    """S3 ListObjectsV2's data-access path: prefix filter, keyset pagination, and ACL scoping,
+    all pushed into SQL and ordered by key — so listing a big bucket costs one indexed range
+    scan per page, not a whole-bucket materialize + Python sort/filter.
+
+    The prefix filter is an explicit half-open byte range (``key >= prefix AND key <
+    key_successor(prefix)``), NOT a ``LIKE prefix||'%'``: SQLite only turns a LIKE's leading
+    literal into an index range when ``case_sensitive_like`` is ON, which this repo must not set
+    (``list_drive_by_name`` relies on the default case-insensitive LIKE) — so a plain LIKE here
+    would silently fall back to a full index/table scan regardless of match position. The byte
+    range hits ``idx_s3_key(bucket, key)`` directly (leading ``bucket = ?`` equality + an
+    ascending range on ``key``), giving both the WHERE and the ORDER BY a single indexed range
+    scan, no full scan and no separate sort step. It's also case-SENSITIVE (the column has the
+    default BINARY collation), matching real S3's byte-exact prefix matching — and needs no
+    wildcard escaping, since a byte range has no wildcards to escape.
+
+    ``start_after`` (keyset lower bound, exclusive — the last key already returned) and
+    ``start_at`` (inclusive — used by the router to resume past an entire rolled-up
+    CommonPrefixes group) are independent bounds and can both be combined with the prefix range."""
+    sql = "SELECT * FROM s3_objects WHERE bucket = ?"
+    params: list = [bucket]
+    if prefix:
+        sql += " AND key >= ? AND key < ?"
+        params += [prefix, key_successor(prefix)]
+    if start_after:
+        sql += " AND key > ?"
+        params.append(start_after)
+    if start_at:
+        sql += " AND key >= ?"
+        params.append(start_at)
+    clause, cparams = _acl_clause("s3_objects", visible_ids)
+    sql += clause + " ORDER BY key ASC LIMIT ?"
+    params += cparams + [limit]
+    return conn.execute(sql, params).fetchall()
+
+
 def list_drive_folder(conn, folder, visible_ids=None, limit=100, offset=0) -> list[sqlite3.Row]:
     """Non-trashed files directly in a Drive folder — SQL-scoped + SQL-paginated, so listing a
     big folder costs one page of rows per request, not a full-corpus scan on every page."""
@@ -443,6 +489,26 @@ def build_fts(conn) -> bool:
                      f"SELECT doc_id, '{_src_tag(src)}', title, content FROM {tbl}")
         conn.commit()
     return True
+
+
+def fts_add_docs(conn, source_type: str, doc_ids: list[str]) -> int:
+    """Incrementally (re)index specific docs in ``docs_fts`` — delete-then-insert per doc_id so it is
+    idempotent (an upsert). Used by append imports so a small add doesn't trigger a full rebuild over
+    the whole corpus. No-op (returns 0) if the FTS index isn't present or ``doc_ids`` is empty."""
+    if not doc_ids or not _has_fts(conn):
+        return 0
+    tbl, tag = table(source_type), _src_tag(source_type)
+    n = 0
+    for i in range(0, len(doc_ids), 900):
+        chunk = doc_ids[i:i + 900]
+        marks = ",".join("?" for _ in chunk)
+        conn.execute(f"DELETE FROM docs_fts WHERE doc_id IN ({marks})", chunk)
+        conn.execute(f"INSERT INTO docs_fts(doc_id, src, title, content) "
+                     f"SELECT doc_id, '{tag}', title, content FROM {tbl} WHERE doc_id IN ({marks})",
+                     chunk)
+        n += len(chunk)
+    conn.commit()
+    return n
 
 
 def _fts_has_src(conn) -> bool:

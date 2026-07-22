@@ -13,12 +13,13 @@ key-prefix convention surfaced via ListObjectsV2's ``delimiter``/``CommonPrefixe
 """
 from __future__ import annotations
 
+import base64
+
 from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, Request, Response
 
 from app import auth, store, synth
-from app.pagination import decode_cursor, encode_cursor
 
 router = APIRouter(prefix="/s3", tags=["s3"])
 # A signed S3 request's canonical path is exact; letting Starlette 307-redirect a bare "/s3" ->
@@ -81,6 +82,37 @@ def _object_row(request: Request, conn, bucket: str, key: str, visible):
     return store.get_document(conn, "s3", doc_id, visible)
 
 
+def _encode_key_token(key: str) -> str:
+    """ListObjectsV2's ``NextContinuationToken`` is opaque on real S3; here it's just the last
+    key of the page, base64'd — a keyset cursor, not an offset, so resuming never re-scans (or
+    re-counts) the rows already returned. Resumes EXCLUSIVE of ``key`` (``key > key``)."""
+    return base64.urlsafe_b64encode(("k:" + key).encode()).decode()
+
+
+def _encode_group_token(group_successor: str) -> str:
+    """A cursor that resumes past a WHOLE rolled-up CommonPrefixes group at once, rather than
+    past just the last raw key seen — used when the last entry on a page is a CommonPrefix whose
+    raw keys aren't all fetched yet (see ``_list_objects_v2``). ``group_successor`` is already
+    ``store.key_successor(group)``; resumes INCLUSIVE of it (``key >= group_successor``), since
+    that's the smallest key that could possibly fall outside the group."""
+    return base64.urlsafe_b64encode(("g:" + group_successor).encode()).decode()
+
+
+def _decode_token(token: str) -> tuple[str, str] | None:
+    """Decode a continuation token to ``(mode, value)`` — ``mode`` is ``"after"`` (exclusive,
+    from ``_encode_key_token``) or ``"at"`` (inclusive, from ``_encode_group_token``). ``None``
+    if the token is malformed."""
+    try:
+        raw = base64.urlsafe_b64decode(token.encode()).decode()
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if raw.startswith("k:"):
+        return "after", raw[2:]
+    if raw.startswith("g:"):
+        return "at", raw[2:]
+    return None
+
+
 # --------------------------------------------------------------------------- endpoints
 
 @router.get("")
@@ -130,20 +162,55 @@ def _list_objects_v2(request: Request, conn, bucket: str, visible) -> Response:
     q = request.query_params
     prefix = q.get("prefix", "")
     delimiter = q.get("delimiter", "")
+    start_after = q.get("start-after", "")
     try:
         max_keys = min(int(q.get("max-keys", _MAX_KEYS)), _MAX_KEYS)
     except ValueError:
         return _error("InvalidArgument", "max-keys must be an integer")
-    start = decode_cursor(q.get("continuation-token"))
 
-    rows = store.list_documents(conn, "s3", container=bucket, visible_ids=visible, limit=100_000)
-    keys = sorted(r["key"] for r in rows if r["key"].startswith(prefix))
+    # A continuation-token (opaque, from a previous page) wins over start-after, exactly like
+    # real S3 — start-after only seeds the very first page of a listing. Its mode (exclusive
+    # "after" a raw key, vs inclusive "at" a CommonPrefixes-group successor — see
+    # _encode_group_token) picks which of list_s3_objects' two independent lower bounds to use.
+    continuation = q.get("continuation-token")
+    after, at = None, None
+    if continuation:
+        decoded = _decode_token(continuation)
+        if decoded is not None:
+            mode, value = decoded
+            if mode == "after":
+                after = value
+            else:
+                at = value
+    elif start_after:
+        after = start_after
+
+    # The one SQL query that replaces the old 100k-row materialize: prefix + keyset (`key >
+    # after` / `key >= at`) + ACL all pushed down, walking idx_s3_key(bucket, key) directly in
+    # sorted order. Ask for one extra row so IsTruncated is a plain length check (and so we can
+    # tell, below, whether a trailing rolled-up group extends past this page) — no separate
+    # COUNT(*) query. max_keys=0: the LIMIT is still 1 (so IsTruncated is still computed), but
+    # `rows` ends up empty after trimming, and every access below is guarded on it.
+    rows = store.list_s3_objects(conn, bucket, prefix=prefix, start_after=after, start_at=at,
+                                 visible_ids=visible, limit=max_keys + 1)
+    is_truncated = len(rows) > max_keys
+    overflow_row = rows[max_keys] if is_truncated else None   # first not-yet-returned raw row
+    rows = rows[:max_keys]
     by_key = {r["key"]: r for r in rows}
 
-    # Split into (CommonPrefixes, Contents) using the delimiter, S3-style.
-    contents_keys, common_prefixes = [], []
+    # Split into (CommonPrefixes, Contents) using the delimiter, S3-style. `rows` is already
+    # key-ascending (straight off idx_s3_key), so a first-seen dedup below reproduces the final
+    # sorted order for free — no second sort.
+    #
+    # Bounded rollup: CommonPrefixes are computed only over THIS page (<= max_keys+1 raw rows),
+    # never the whole bucket/prefix. Real S3 can afford to enumerate every CommonPrefixes for a
+    # huge delimited listing in one response because it skips whole key ranges internally without
+    # reading every key under them; a plain SQL range scan can't do that skip, so a "folder" (a
+    # rolled-up CommonPrefixes group) can hold more raw keys than fit in one page.
+    entries: list[tuple[str, str]] = []
     seen_prefix: set[str] = set()
-    for k in keys:
+    for r in rows:
+        k = r["key"]
         if delimiter:
             rest = k[len(prefix):]
             idx = rest.find(delimiter)
@@ -151,24 +218,39 @@ def _list_objects_v2(request: Request, conn, bucket: str, visible) -> Response:
                 cp = prefix + rest[:idx + len(delimiter)]
                 if cp not in seen_prefix:
                     seen_prefix.add(cp)
-                    common_prefixes.append(cp)
+                    entries.append(("cp", cp))
                 continue
-        contents_keys.append(k)
+        entries.append(("obj", k))
 
-    combined = [("cp", cp) for cp in common_prefixes] + [("obj", k) for k in contents_keys]
-    combined.sort(key=lambda t: t[1])
-    page = combined[start:start + max_keys]
-    is_truncated = start + max_keys < len(combined)
-    next_token = encode_cursor(start + max_keys) if is_truncated else None
+    # NextContinuationToken: normally the last *raw* key fetched (exclusive keyset bound), same
+    # as before. But if the LAST entry on this page is a CommonPrefixes group and that group's raw
+    # keys extend past this page (the one overflow row we fetched is still inside it — keys
+    # sharing a prefix are always lexicographically contiguous, so if the very next raw key isn't
+    # in the group, nothing further out is either), resuming at "key > last raw key" would walk
+    # straight back into the SAME group and re-emit its already-returned CommonPrefixes on the
+    # next page. Instead resume at "key >= key_successor(group)" — past the group's entire key
+    # range in one bounded index seek, never re-scanning its rows — so each CommonPrefixes is
+    # emitted at most once across all pages, and plain keys still use the last-key cursor.
+    next_token = None
+    if is_truncated and rows:
+        last_kind, last_val = entries[-1] if entries else (None, None)
+        if last_kind == "cp" and overflow_row is not None and \
+                overflow_row["key"].startswith(last_val):
+            next_token = _encode_group_token(store.key_successor(last_val))
+        else:
+            next_token = _encode_key_token(rows[-1]["key"])
 
     body = [f'<ListBucketResult xmlns="{NS}"><Name>{escape(bucket)}</Name>',
             f'<Prefix>{escape(prefix)}</Prefix>',
-            f'<KeyCount>{len(page)}</KeyCount><MaxKeys>{max_keys}</MaxKeys>',
+            f'<KeyCount>{len(entries)}</KeyCount><MaxKeys>{max_keys}</MaxKeys>',
             f'<Delimiter>{escape(delimiter)}</Delimiter>' if delimiter else '',
+            f'<StartAfter>{escape(start_after)}</StartAfter>' if start_after else '',
             f'<IsTruncated>{"true" if is_truncated else "false"}</IsTruncated>']
+    if continuation:
+        body.append(f'<ContinuationToken>{escape(continuation)}</ContinuationToken>')
     if next_token:
         body.append(f'<NextContinuationToken>{next_token}</NextContinuationToken>')
-    for kind, val in page:
+    for kind, val in entries:
         if kind == "cp":
             body.append(f'<CommonPrefixes><Prefix>{escape(val)}</Prefix></CommonPrefixes>')
         else:

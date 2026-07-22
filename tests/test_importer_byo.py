@@ -8,6 +8,7 @@ from app import store
 from app.acl import Acl
 from app.config import Settings
 from app.routers.slack import _message
+from app.importer import byo
 from app.importer.byo import load
 
 
@@ -302,3 +303,79 @@ def test_s3_byo_rejects_missing_key(tmp_path):
         {"source_type": "s3", "bucket": "b", "title": "t", "content": "c"}))  # no key
     with pytest.raises(SystemExit):
         load(corpus, Settings(data_dir=tmp_path))
+
+
+def _corpus(tmp_path, name, lines):
+    p = tmp_path / name
+    p.write_text("\n".join(json.dumps(x) for x in lines))
+    return p
+
+
+def test_append_preserves_prior_roster_and_org(tmp_path, monkeypatch):
+    monkeypatch.setenv("MOCK_DATA_DIR", str(tmp_path))
+    from app.config import get_settings
+    get_settings.cache_clear()
+    s = get_settings()
+    a = _corpus(tmp_path, "a.jsonl", [
+        {"source_type": "confluence", "title": "A", "content": "alpha",
+         "space": "ENG", "author_email": "ann@acme.com", "visibility": "group", "group": "eng"}])
+    byo.load(a, s, reset=True)
+    prev_users = {u["email"] for u in yaml.safe_load(s.tokens_path.read_text())["users"]}
+    prev_org = yaml.safe_load(s.tokens_path.read_text())["org"]
+    ann_token = {u["email"]: u["token"]
+                 for u in yaml.safe_load(s.tokens_path.read_text())["users"]}["ann@acme.com"]
+
+    # b has both a group-scoped doc (redwoodinference author, for the roster union check) and
+    # a *public* doc (also redwoodinference) — a public doc gets granted to the org principal,
+    # so this is what exercises the `principals WHERE type='org'` DB lookup on append: if that
+    # lookup were removed and the org were re-inferred from b alone, the public doc would be
+    # granted to a *new* redwoodinference org principal instead of the original acme org.
+    b = _corpus(tmp_path, "b.jsonl", [
+        {"source_type": "notion", "title": "B", "content": "beta rotate",
+         "teamspace": "ops", "author_email": "bob@redwoodinference.com",
+         "visibility": "group", "group": "ops"},
+        {"source_type": "notion", "title": "Bpub", "content": "beta public",
+         "teamspace": "ops", "author_email": "cara@redwoodinference.com",
+         "visibility": "public"},
+    ])
+    byo.load(b, s, reset=False)
+    tok = yaml.safe_load(s.tokens_path.read_text())
+    now_users = {u["email"] for u in tok["users"]}
+    assert "ann@acme.com" in now_users and "bob@redwoodinference.com" in now_users  # union
+    assert prev_users <= now_users
+    assert tok["org"] == prev_org                                                    # org unchanged
+
+    conn = store.connect_ro(s.db_path)
+    try:
+        # exactly one org principal exists — no re-inferred second org was created
+        assert conn.execute(
+            "SELECT COUNT(*) FROM principals WHERE type='org'").fetchone()[0] == 1
+        # every org-scoped grant references the ORIGINAL org, proving the public doc in b
+        # was granted to it rather than to a freshly re-inferred org
+        org_grant_principals = {r[0] for r in conn.execute(
+            "SELECT DISTINCT principal_id FROM doc_acl WHERE principal_type='org'")}
+        assert org_grant_principals == {prev_org}
+    finally:
+        conn.close()
+
+    # a prior user's token is stable across the append
+    assert tok["users"][[u["email"] for u in tok["users"]].index("ann@acme.com")]["token"] == ann_token
+
+
+def test_append_incremental_fts_finds_new_and_keeps_old(tmp_path, monkeypatch):
+    monkeypatch.setenv("MOCK_DATA_DIR", str(tmp_path))
+    from app.config import get_settings
+    get_settings.cache_clear()
+    s = get_settings()
+    byo.load(_corpus(tmp_path, "a.jsonl", [
+        {"source_type": "confluence", "title": "A", "content": "alpha unique",
+         "space": "ENG", "author_email": "ann@acme.com", "visibility": "group", "group": "eng"}]),
+        s, reset=True)
+    byo.load(_corpus(tmp_path, "b.jsonl", [
+        {"source_type": "notion", "title": "B", "content": "beta unique",
+         "teamspace": "ops", "author_email": "bob@acme.com", "visibility": "group", "group": "ops"}]),
+        s, reset=False)
+    conn = store.connect_ro(s.db_path)
+    assert len(store.search_documents(conn, "beta", "notion")) == 1       # new doc indexed
+    assert len(store.search_documents(conn, "alpha", "confluence")) == 1  # old doc still indexed
+    conn.close()
