@@ -31,6 +31,12 @@ class _ALoose(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class JiraServerInfo(_ALoose):
+    baseUrl: str
+    version: str
+    deploymentType: str = "Cloud"
+
+
 class JiraSearchResult(_ALoose):
     issues: list[dict] = []
     isLast: bool = True
@@ -96,11 +102,25 @@ def _adf(content: str) -> dict:
             "content": [{"type": "paragraph", "content": [{"type": "text", "text": p}]} for p in paras]}
 
 
-def _jira_container_for_key(conn, project_key: str) -> str | None:
+def _jira_container_for_key(conn, token: str) -> str | None:
+    """Resolve a JQL project token to its backing container. Matches either the synthesized
+    project key (``PAY3F9A2C``, case-insensitive) or the literal container name (e.g.
+    ``payments``, case-insensitive) — real Jira project pickers accept both key and name.
+    Anything else is unresolvable -> None (callers must treat this as "0 results", never
+    silently fall back to the unfiltered corpus)."""
     for r in store.list_containers(conn, "jira"):
-        if synth.jira_project_key(r["name"]) == project_key:
+        if synth.jira_project_key(r["name"]) == token.upper() or r["name"].lower() == token.lower():
             return r["name"]
     return None
+
+
+@router.get("/rest/api/2/serverInfo", response_model=JiraServerInfo)  # jira PyPI client probes this on connect
+@router.get("/rest/api/3/serverInfo", response_model=JiraServerInfo)
+async def jira_server_info(request: Request):
+    site = _site(request)
+    return {"baseUrl": site, "version": "1000.0.0", "deploymentType": "Cloud",
+            "versionNumbers": [1000, 0, 0], "buildNumber": 100000,
+            "serverTime": synth.rfc3339_millis(synth.epoch("serverInfo"))}
 
 
 @router.get("/rest/api/3/project/search")
@@ -155,6 +175,10 @@ async def jira_search(request: Request):
             pass
     jql = str(params.get("jql", ""))
     container = _project_from_jql(conn, jql)
+    if container is _JIRA_PROJECT_UNRESOLVED:
+        # a project= clause was present but didn't match any project: strict 0 matches, not
+        # the unfiltered corpus.
+        return {"issues": [], "isLast": True}
     term = _text_from_jql(jql)
     limit = _int(params.get("maxResults"), get_settings().default_page_size)
     offset = decode_cursor(params.get("nextPageToken"))
@@ -254,11 +278,19 @@ async def jira_fields(request: Request):
     return _JIRA_FIELDS
 
 
-def _project_from_jql(conn, jql: str) -> str | None:
+# sentinel: the JQL carried a `project = X` clause that didn't resolve to any known project.
+# Distinct from `None` (no project clause at all -> no filter), so callers never silently
+# collapse "unresolvable" into "unfiltered" (the fidelity gap found & fixed for Confluence's
+# space= handling applies identically to Jira's project= handling).
+_JIRA_PROJECT_UNRESOLVED = object()
+
+
+def _project_from_jql(conn, jql: str):
     m = re.search(r"project\s*=\s*[\"']?([A-Za-z0-9_]+)", jql)
     if not m:
         return None
-    return _jira_container_for_key(conn, m.group(1).upper())
+    container = _jira_container_for_key(conn, m.group(1))
+    return container if container is not None else _JIRA_PROJECT_UNRESOLVED
 
 
 def _text_from_jql(jql: str) -> str | None:
@@ -407,9 +439,22 @@ def _view(content: str) -> str:
     return f'<div class="contentLayout2"><div class="columnLayout single">{body}</div></div>'
 
 
+def _export_view(content: str) -> str:
+    """Rendered ``export_view`` HTML — the real API's export-oriented rendering (same content
+    as ``view``, without editor-only attributes like ``auto-cursor-target``)."""
+    paras = [p for p in content.split("\n\n") if p.strip()] or [content]
+    body = "".join(f"<p>{escape(p)}</p>" for p in paras)
+    return f'<div class="contentLayout2"><div class="columnLayout single">{body}</div></div>'
+
+
 def _space_container_for_key(conn, space_key: str) -> str | None:
+    """Resolve a Confluence ``spaceKey`` to its backing container name. The mock models a space
+    by its corpus name, so both the synthesized key (``synth.confluence_space_key(name)``, the
+    hash-suffixed value ``/space`` advertises) and the literal container name (e.g. ``"handbook"``,
+    a legitimate natural key) resolve. Anything else is unresolvable -> ``None`` (never a silent
+    fall-through to "no filter": callers must treat ``None`` as "0 results", not "everything")."""
     for r in store.list_containers(conn, "confluence"):
-        if synth.confluence_space_key(r["name"]) == space_key:
+        if space_key == synth.confluence_space_key(r["name"]) or space_key == r["name"]:
             return r["name"]
     return None
 
@@ -472,9 +517,15 @@ async def confluence_cql_search(request: Request):
     m = re.search(r'(?:text|title)\s*~\s*"?([^"~]+)"?', cql) or re.search(r'~\s*"?([^"~]+)"?', cql)
     term = m.group(1).strip() if m else ""
     # honor the common structured CQL clauses: space / type / label
-    ms = re.search(r'space\s*=\s*"?([A-Za-z0-9_]+)"?', cql)
+    ms = re.search(r'space(?:\.key)?\s*=\s*"?([A-Za-z0-9_-]+)"?', cql)
     space_key = ms.group(1) if ms else None
-    container = _space_container_for_key(conn, space_key) if space_key else None
+    space_unresolvable = False
+    container = None
+    if space_key:
+        container = _space_container_for_key(conn, space_key)
+        if container is None:
+            # unresolvable space=/space.key= clause: strict 0 matches, not the unfiltered corpus.
+            space_unresolvable = True
     mt = re.search(r'type\s*=\s*"?(page|blogpost|comment)"?', cql)
     want_type = mt.group(1) if mt else None
     ml = re.search(r'label\s*(?:=|in)\s*"?([^")\s]+)"?', cql)
@@ -487,6 +538,8 @@ async def confluence_cql_search(request: Request):
     everything = store.search_documents(conn, term, "confluence", ids, limit=100_000, offset=0)
 
     def _match(r) -> bool:
+        if space_unresolvable:
+            return False
         if container and r["space"] != container:
             return False
         if want_type and (r["subtype"] or "page") != want_type:
@@ -522,9 +575,17 @@ async def confluence_content_list(request: Request):
     ids = auth.visible_ids(request, caller)
     expand = request.query_params.get("expand", "")
     space_key = request.query_params.get("spaceKey")
-    container = _space_container_for_key(conn, space_key) if space_key else None
     limit = _int(request.query_params.get("limit"), 25)
     start = _int(request.query_params.get("start"), 0)
+    if space_key:
+        container = _space_container_for_key(conn, space_key)
+        if container is None:
+            # spaceKey given but unresolvable: real Confluence returns zero matches, never the
+            # unfiltered corpus — do not let this collapse to the "no spaceKey" (container=None) case.
+            links = {"base": f"{_site(request)}/wiki"}
+            return {"results": [], "start": start, "limit": limit, "size": 0, "_links": links}
+    else:
+        container = None
     total = store.count_documents(conn, "confluence", container, ids)
     rows = store.list_documents(conn, "confluence", container, ids, limit=limit, offset=start)
     results = [_confluence_page(conn, request, r, expand) for r in rows]
@@ -676,6 +737,9 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
                                                   "representation": "storage"}
     if "body.view" in expand:
         page.setdefault("body", {})["view"] = {"value": _view(row["content"]), "representation": "view"}
+    if "body.export_view" in expand:
+        page.setdefault("body", {})["export_view"] = {"value": _export_view(row["content"]),
+                                                       "representation": "export_view"}
     if "body.atlas_doc_format" in expand:
         import json as _json
         page.setdefault("body", {})["atlas_doc_format"] = {

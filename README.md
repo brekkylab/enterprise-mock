@@ -233,16 +233,35 @@ mount as a real OS filesystem (macFUSE/fuse3) that any tool can `cat`/`grep`. (J
 and GitHub are out of scope — mirage has no Jira/Confluence connector, and its GitHub connector
 mirrors a repo's source-file tree rather than the issues/PRs the mock serves.)
 
+## Using LlamaIndex readers with the mock
+
+Point official [LlamaIndex readers](https://docs.llamaindex.ai/en/stable/module_guides/loading/connector/)
+(`llama-index-readers-*`) at the mock and load an enterprise corpus as `Document` objects — the
+first step of a LlamaIndex ingestion/RAG pipeline. GitHub, S3, Confluence, and Jira readers take a
+host override directly; Slack, Notion, Gmail, and Drive hardcode their host, so a small shim in
+`_llamaindex.py` redirects each:
+
+```python
+from llama_index.readers.github import GitHubIssuesClient
+GitHubIssuesClient(github_token=TOKEN, base_url="http://localhost:8000/github")
+
+from llama_index.readers.confluence import ConfluenceReader
+ConfluenceReader(base_url="http://localhost:8000/atlassian/wiki", cloud=False, api_token=TOKEN)
+```
+
+One runnable script per source (GitHub, S3, Confluence, Jira, Slack, Notion, Gmail, Drive) is in
+[`examples/using-llamaindex-readers/`](examples/using-llamaindex-readers/).
+
 ## Endpoints (read-only)
 
 | Prefix | Service | Endpoints |
 |---|---|---|
-| `/slack/api` | Slack | `conversations.list`, `conversations.history` (+`oldest`/`latest`/`inclusive`), `conversations.replies`, `conversations.members`, `users.list`, `users.info`, `auth.test`, `search.messages` |
+| `/slack/api` | Slack | `conversations.list`, `conversations.history` (+`oldest`/`latest`/`inclusive`), `conversations.replies`, `conversations.members`, `users.list`, `users.info`, `auth.test`, `api.test` (auth-free connectivity check), `search.messages` |
 | `/gmail/v1` | Gmail | `users/{u}/messages` (+`q`: free text / `from:` `subject:` `after:` `before:` `label:` `has:attachment`), `messages/{id}` (`format=full\|metadata\|minimal`), `messages/{id}/attachments/{id}`, `threads` (+`q`), `threads/{id}`, `labels`, `profile` |
 | `/drive/v3` | Drive | `files` (`q`: `fullText contains`, `name contains`, `mimeType`, `… in parents` incl. `'root'` → folders, `trashed`, `modifiedTime`), `files/{id}`, `files/{id}/export`, `files/{id}/permissions`, `drives` |
 | `/docs/v1`, `/sheets/v4`, `/slides/v1` | Docs/Sheets/Slides | `documents/{id}`, `spreadsheets/{id}`, `presentations/{id}` — native-doc content for editor-aware clients (read structurally instead of via Drive export) |
 | `/github` | GitHub | `search/issues` (`q`: free text + `repo:` `is:` `state:` `type:` `label:` `author:`), `orgs/{org}`, `orgs/{org}/repos`, `repos/{o}/{r}`, `.../issues[/{n}]`, `.../issues/{n}/comments`, `.../pulls[/{n}]`, `.../pulls/{n}/reviews`, `.../readme`, `.../collaborators`, `.../teams`, `orgs/{org}/teams` |
-| `/atlassian/rest/api/3` | Jira | `search/jql` (JQL `project =`, `text\|summary\|description ~`), `issue/{key}`, `issue/{key}/comment`, `field`, `issueLinkType`, `project/search`, `project/{key}/role[/{id}]` |
+| `/atlassian/rest/api/3` | Jira | `search/jql` (JQL `project =`, `text\|summary\|description ~`), `issue/{key}`, `issue/{key}/comment`, `field`, `issueLinkType`, `project/search`, `project/{key}/role[/{id}]`, `serverInfo` (also under `rest/api/2`) |
 | `/atlassian/wiki/rest/api` | Confluence | `content`, `content/{id}`, `content/{id}/restriction/byOperation`, `space`, `space/{key}/permission` |
 | `/notion/v1` | Notion | `search`, `pages/{id}`, `blocks/{id}`, `blocks/{id}/children`, `databases/{id}` (version-aware), `data_sources/{id}`, `data_sources/{id}/query`, `databases/{id}/query` (legacy), `users[/{id}]`, `users/me`, `comments` |
 | `/s3` | Amazon S3 | `ListBuckets`, `HeadBucket`, `GetBucketLocation`, `ListObjectsV2` (`prefix`/`delimiter`/`continuation-token`), `GetObject` (+`Range`), `HeadObject` |

@@ -123,9 +123,16 @@ def test_confluence_body_and_version(tmp_path):
     ])
     conn = store.connect_ro(s.db_path)
     row = store.get_document(conn, "confluence", "c1")
-    page = _confluence_page(conn, _req(), row, "body.storage,body.view,version,metadata.labels,history")
+    page = _confluence_page(
+        conn, _req(), row,
+        "body.storage,body.view,body.export_view,version,metadata.labels,history")
     # storage (XHTML source) and view (rendered) must differ
     assert page["body"]["storage"]["value"] != page["body"]["view"]["value"]
+    # export_view (rendered, used by llama-index's ConfluenceReader) carries the same content
+    # as view but without editor-only attributes (e.g. no `auto-cursor-target` class)
+    assert page["body"]["export_view"]["representation"] == "export_view"
+    assert "para one" in page["body"]["export_view"]["value"]
+    assert "auto-cursor-target" not in page["body"]["export_view"]["value"]
     # version reflects the update + BYO message/minorEdit; history carries creation
     assert page["version"]["number"] == 2 and page["version"]["message"] == "edited"
     assert page["version"]["minorEdit"] is True
@@ -203,6 +210,38 @@ def test_gmail_raw_and_headers(tmp_path):
     full = _gmail_message(row, "full")
     names = {h["name"] for h in full["payload"]["headers"]}
     assert "Bcc" not in names and "MIME-Version" in names
+
+    # The declared Content-Type (multipart/alternative here, no attachments) must be backed by a
+    # genuinely boundary-delimited body -- not just plain text under a multipart header (invalid
+    # MIME real Gmail never produces). Round-trip through Python's own `email` parser: a well-
+    # formed message parses with no defects, `is_multipart()` True, and yields the plain-text
+    # body back out, matching what a real reader (e.g. llama-index's GmailReader) needs.
+    import email
+    mime_msg = email.message_from_bytes(base64.urlsafe_b64decode(raw["raw"]))
+    assert not mime_msg.defects, f"raw Gmail message is not valid MIME: {mime_msg.defects}"
+    assert mime_msg.is_multipart()
+    plain_parts = [p for p in mime_msg.get_payload() if p.get_content_type() == "text/plain"]
+    assert plain_parts and plain_parts[0].get_payload(decode=True).decode() == "body text"
+
+
+def test_gmail_raw_with_attachment_is_valid_mime(tmp_path):
+    from app.routers.google import _gmail_message
+    s = _load(tmp_path, [
+        {"source_type": "gmail", "doc_id": "m2", "mailbox": "ceo", "title": "With attachment",
+         "content": "see attached", "author_email": "ceo@x.com",
+         "attachments": [{"filename": "notes.txt", "mime": "text/plain", "content": "hello"}]},
+    ])
+    conn = store.connect_ro(s.db_path)
+    row = store.get_document(conn, "gmail", "m2")
+    raw = _gmail_message(row, "raw")
+    import base64, email
+    decoded_bytes = base64.urlsafe_b64decode(raw["raw"])
+    assert b"Content-Type: multipart/mixed" in decoded_bytes  # top_mime switches with attachments
+    mime_msg = email.message_from_bytes(decoded_bytes)
+    assert not mime_msg.defects, f"raw Gmail message is not valid MIME: {mime_msg.defects}"
+    assert mime_msg.is_multipart()
+    filenames = {p.get_filename() for p in mime_msg.get_payload() if p.get_filename()}
+    assert "notes.txt" in filenames
 
 
 # --- Slack -----------------------------------------------------------------------

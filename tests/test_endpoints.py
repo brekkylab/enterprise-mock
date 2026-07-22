@@ -102,7 +102,7 @@ def crawl_github_repo(client, headers, org, repo):
     out, page = [], 1
     while True:
         r = client.get(f"/github/repos/{org}/{repo}/issues", headers=headers,
-                       params={"per_page": 5, "page": page})
+                       params={"per_page": 5, "page": page, "state": "all"})
         body = r.json()
         out += body
         if 'rel="next"' not in r.headers.get("Link", ""):
@@ -235,6 +235,117 @@ def test_github_body_roundtrip(client, admin_h, ro_conn, org):
     assert issue["body"] == doc["content"] and issue["title"] == doc["title"]
 
 
+def test_github_issues_filtered_by_state(client, admin_h, org):
+    # gateway repo: gh-issue-1 is open, gh-pr-1 is a closed PR (both surface via /issues)
+    open_body = client.get(f"/github/repos/{org}/gateway/issues", headers=admin_h,
+                           params={"state": "open"}).json()
+    assert [i["title"] for i in open_body] == ["Rate limiter drops bursts under 50ms"]
+    closed_body = client.get(f"/github/repos/{org}/gateway/issues", headers=admin_h,
+                             params={"state": "closed"}).json()
+    assert [i["title"] for i in closed_body] == ["Fix token-bucket refill off-by-one"]
+    all_body = client.get(f"/github/repos/{org}/gateway/issues", headers=admin_h,
+                          params={"state": "all"}).json()
+    assert {i["title"] for i in all_body} == {"Rate limiter drops bursts under 50ms",
+                                              "Fix token-bucket refill off-by-one"}
+    # default (no state param) behaves like real GitHub: open only
+    default_body = client.get(f"/github/repos/{org}/gateway/issues", headers=admin_h).json()
+    assert default_body == open_body
+
+
+def test_github_pulls_filtered_by_state(client, admin_h, org):
+    # gateway repo's only PR (gh-pr-1) is closed
+    open_body = client.get(f"/github/repos/{org}/gateway/pulls", headers=admin_h,
+                           params={"state": "open"}).json()
+    assert open_body == []
+    closed_body = client.get(f"/github/repos/{org}/gateway/pulls", headers=admin_h,
+                             params={"state": "closed"}).json()
+    assert [p["title"] for p in closed_body] == ["Fix token-bucket refill off-by-one"]
+    all_body = client.get(f"/github/repos/{org}/gateway/pulls", headers=admin_h,
+                          params={"state": "all"}).json()
+    assert [p["title"] for p in all_body] == ["Fix token-bucket refill off-by-one"]
+
+
+def test_jira_serverinfo_v2_alias_matches_v3(client, admin_h):
+    # the `jira` PyPI client (used by llama-index's JiraReader) probes serverInfo under
+    # /rest/api/2 on connect; the mock must serve the same shape as the v3 handler.
+    v2 = client.get("/atlassian/rest/api/2/serverInfo", headers=admin_h).json()
+    v3 = client.get("/atlassian/rest/api/3/serverInfo", headers=admin_h).json()
+    assert v2 == v3
+    assert v2["deploymentType"] == "Cloud"
+
+
+def test_jira_search_filtered_by_project(client, admin_h):
+    from app import synth
+
+    # literal project name (a legitimate JQL project= token) narrows to that project's issues
+    by_name = client.get("/atlassian/rest/api/3/search/jql", headers=admin_h,
+                         params={"jql": "project = payments"}).json()
+    titles = {i["fields"]["summary"] for i in by_name["issues"]}
+    assert titles == {"SEV2: checkout latency spike", "Write postmortem for the SEV2",
+                       "Personal task: rotate my API keys"}
+
+    # the synthesized (hash-suffixed) project key resolves to the same project
+    synth_key = synth.jira_project_key("payments")
+    by_key = client.get("/atlassian/rest/api/3/search/jql", headers=admin_h,
+                        params={"jql": f"project = {synth_key}"}).json()
+    assert {i["fields"]["summary"] for i in by_key["issues"]} == titles
+
+    # an unresolvable project is strict: zero results, not the unfiltered corpus
+    bogus = client.get("/atlassian/rest/api/3/search/jql", headers=admin_h,
+                       params={"jql": "project = BOGUS_NOPE"}).json()
+    assert bogus["issues"] == [] and bogus["isLast"] is True
+
+    # no project clause at all -> unfiltered (same three issues here, since payments is the
+    # only Jira project in the SAMPLE corpus -- the earlier assertions are what prove filtering,
+    # not this equality)
+    unfiltered = client.get("/atlassian/rest/api/3/search/jql", headers=admin_h).json()
+    assert {i["fields"]["summary"] for i in unfiltered["issues"]} == titles
+
+
+def test_confluence_content_filtered_by_space_key(client, admin_h):
+    from app import synth
+
+    # literal container name (the natural spaceKey value) narrows to that space only
+    by_name = client.get("/atlassian/wiki/rest/api/content", headers=admin_h,
+                         params={"spaceKey": "handbook"}).json()
+    titles = {r["title"] for r in by_name["results"]}
+    assert titles == {"Engineering Handbook", "On-call Runbook"}
+    assert "Compensation Bands 2026" not in titles
+
+    # the synthesized (hash-suffixed) key resolves to the same space
+    synth_key = synth.confluence_space_key("handbook")
+    by_synth_key = client.get("/atlassian/wiki/rest/api/content", headers=admin_h,
+                              params={"spaceKey": synth_key}).json()
+    assert {r["title"] for r in by_synth_key["results"]} == titles
+
+    # an unresolvable spaceKey is strict: zero results, not the unfiltered corpus
+    bogus = client.get("/atlassian/wiki/rest/api/content", headers=admin_h,
+                       params={"spaceKey": "BOGUS_NOPE"}).json()
+    assert bogus["results"] == [] and bogus["size"] == 0
+
+    # no spaceKey at all -> unfiltered (still includes the other space)
+    unfiltered = client.get("/atlassian/wiki/rest/api/content", headers=admin_h).json()
+    assert "Compensation Bands 2026" in {r["title"] for r in unfiltered["results"]}
+
+
+def test_confluence_cql_search_filtered_by_space(client, admin_h):
+    # "software" appears only in cf-handbook's body (SAMPLE), so this term narrows to one hit
+    # when the space clause matches, and correctly to zero when it points elsewhere/unresolvable
+    # (proving the space filter — not the text term — is what drives the 0, in the negative cases).
+    narrowed = client.get("/atlassian/wiki/rest/api/search", headers=admin_h,
+                          params={"cql": 'text~"software" and space=handbook'}).json()
+    assert {r["title"] for r in narrowed["results"]} == {"Engineering Handbook"}
+    assert narrowed["totalSize"] == 1
+
+    other_space = client.get("/atlassian/wiki/rest/api/search", headers=admin_h,
+                             params={"cql": 'text~"software" and space=people-ops'}).json()
+    assert other_space["results"] == [] and other_space["totalSize"] == 0
+
+    bogus = client.get("/atlassian/wiki/rest/api/search", headers=admin_h,
+                       params={"cql": 'text~"software" and space=BOGUS_NOPE'}).json()
+    assert bogus["results"] == [] and bogus["totalSize"] == 0
+
+
 def test_confluence_storage_roundtrip(client, admin_h, ro_conn):
     doc = ro_conn.execute("SELECT * FROM confluence_pages LIMIT 1").fetchone()
     from app import synth
@@ -302,6 +413,16 @@ def test_unauthenticated_is_rejected(client):
     assert client.get("/atlassian/rest/api/3/search/jql").status_code == 401
     slack = client.post("/slack/api/conversations.list").json()
     assert slack == {"ok": False, "error": "not_authed"}
+
+
+def test_slack_api_test_requires_no_auth(client):
+    # real Slack's api.test needs no token at all (it's a bare connectivity check); several real
+    # clients call it at construction/connect time (e.g. llama-index's SlackReader.__init__), so
+    # the mock must answer 200 without auth rather than 404/not_authed.
+    ok = client.post("/slack/api/api.test", data={"foo": "bar"}).json()
+    assert ok == {"ok": True, "args": {"foo": "bar"}}
+    err = client.post("/slack/api/api.test", data={"error": "boom"}).json()
+    assert err == {"ok": False, "error": "boom"}
 
 
 def test_slack_accepts_form_field_token(client, tokens):
@@ -709,6 +830,14 @@ def test_slack_responses_unchanged_by_enrichment(client, admin_h):
     assert srch["ok"] and "messages" in srch and "matches" in srch["messages"]
 
 
+def test_slack_api_test_has_typed_response_schema(client):
+    # api.test is a new endpoint (readers probe it on connect); enrich it like its siblings.
+    op = client.get("/openapi.json").json()["paths"]["/slack/api/api.test"]["get"]
+    schema = op["responses"]["200"]["content"]["application/json"]["schema"]
+    assert schema != {}
+    assert "$ref" in schema or schema.get("type") in ("object", "array")
+
+
 # --- OpenAPI enrichment: gmail ------------------------------------------------------------
 
 def test_gmail_messages_documents_q_param(client):
@@ -831,6 +960,15 @@ def test_atlassian_confluence_search_documents_cql(client):
 def test_atlassian_issue_has_typed_response_schema(client):
     op = client.get("/openapi.json").json()["paths"]["/atlassian/rest/api/3/issue/{key}"]["get"]
     assert op["responses"]["200"]["content"]["application/json"]["schema"] != {}
+
+
+def test_atlassian_serverinfo_has_typed_response_schema(client):
+    # serverInfo is a new alias (jira PyPI client probes it on connect); enrich it like its siblings.
+    for ver in ("2", "3"):
+        op = client.get("/openapi.json").json()["paths"][f"/atlassian/rest/api/{ver}/serverInfo"]["get"]
+        schema = op["responses"]["200"]["content"]["application/json"]["schema"]
+        assert schema != {}
+        assert "$ref" in schema or schema.get("type") in ("object", "array")
 
 
 def test_atlassian_responses_unchanged_by_enrichment(client, admin_h):

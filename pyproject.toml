@@ -67,6 +67,25 @@ mcp = [
     "pyyaml>=6.0",
     "fastmcp>=2.0",
 ]
+# LlamaIndex reader examples (examples/using-llamaindex-readers/): point each official
+# llama-index reader at the mock and load Documents. Readers pull their own client libs
+# transitively; the ones we configure directly are listed explicitly for clarity.
+llamaindex = [
+    "llama-index-readers-slack>=0.5",
+    "llama-index-readers-google>=0.7",
+    "llama-index-readers-github>=0.11",
+    "llama-index-readers-jira>=0.6",
+    "llama-index-readers-confluence>=0.7",
+    "llama-index-readers-notion>=0.5",
+    "llama-index-readers-s3>=0.6",
+    "jira>=3.10",
+    "atlassian-python-api>=4.0",
+    "slack_sdk>=3.43",
+    "google-api-python-client>=2.198",
+    "google-auth>=2.55",
+    "boto3>=1.40",
+    "s3fs>=2026.6",
+]
 
 [project.urls]
 Homepage = "https://github.com/brekkylab/enterprise-mock"

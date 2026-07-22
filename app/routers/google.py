@@ -490,7 +490,8 @@ def _gmail_message(row, fmt: str) -> dict:
             headers.append({"name": hname, "value": row[col]})
     attachments = store.jcol(row, "attachments")
     top_mime = "multipart/mixed" if attachments else "multipart/alternative"
-    headers.append({"name": "Content-Type", "value": f'{top_mime}; boundary="b_{row["doc_id"][:12]}"'})
+    boundary = f'b_{row["doc_id"][:12]}'
+    headers.append({"name": "Content-Type", "value": f'{top_mime}; boundary="{boundary}"'})
 
     msg = {
         "id": row["doc_id"], "threadId": row["thread_id"] or row["doc_id"],
@@ -498,8 +499,31 @@ def _gmail_message(row, fmt: str) -> dict:
         "snippet": row["content"][:200], "historyId": "1",
         "internalDate": str(ts * 1000), "sizeEstimate": len(row["content"]) + 400,
     }
-    if fmt == "raw":  # RFC 2822 message, base64url — no parsed payload
-        raw = "\r\n".join(f"{h['name']}: {h['value']}" for h in headers) + "\r\n\r\n" + row["content"]
+    html = row["body_html"] or f"<html><body><p>{row['content']}</p></body></html>"
+    if fmt == "raw":
+        # RFC 2822 message, base64url — a genuine boundary-delimited MIME body matching the
+        # declared multipart Content-Type above (previously this just appended the plain-text
+        # content under a `multipart/...` header with no boundary anywhere in the body: real
+        # Gmail never produces that — invalid MIME — and Python's `email` parser flags it with
+        # StartBoundaryNotFoundDefect/MultipartInvariantViolationDefect, which readers built on
+        # it, e.g. llama-index's GmailReader, choke on since `get_payload()` degrades to a bare
+        # string instead of a list of sub-messages). Mirrors the same flat text/plain + text/html
+        # (+ attachment) leaves the `full` format exposes via `parts` below.
+        leaves = [
+            f'Content-Type: text/plain; charset="UTF-8"\r\n\r\n{row["content"]}',
+            f'Content-Type: text/html; charset="UTF-8"\r\n\r\n{html}',
+        ]
+        for att in attachments:
+            filename = att.get("filename", "attachment.bin")
+            mime = att.get("mime", "application/octet-stream")
+            b64 = base64.b64encode(att.get("content", "").encode("utf-8")).decode("ascii")
+            leaves.append(
+                f'Content-Type: {mime}; name="{filename}"\r\n'
+                f'Content-Disposition: attachment; filename="{filename}"\r\n'
+                f'Content-Transfer-Encoding: base64\r\n\r\n{b64}'
+            )
+        mime_body = "".join(f"--{boundary}\r\n{leaf}\r\n" for leaf in leaves) + f"--{boundary}--"
+        raw = "\r\n".join(f"{h['name']}: {h['value']}" for h in headers) + "\r\n\r\n" + mime_body
         msg["raw"] = _b64url(raw)
         return msg
     if fmt == "minimal":
@@ -510,7 +534,6 @@ def _gmail_message(row, fmt: str) -> dict:
         return msg
 
     # full: multipart with text/plain + text/html leaves, plus attachment leaves
-    html = row["body_html"] or f"<html><body><p>{row['content']}</p></body></html>"
     parts = [_leaf("text/plain", "0", row["content"]),
              _leaf("text/html", "1", html)]
     for i, att in enumerate(attachments):

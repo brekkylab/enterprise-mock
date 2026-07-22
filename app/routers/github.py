@@ -192,8 +192,10 @@ async def list_issues(owner: str, repo: str, request: Request,
         raise HTTPException(status_code=404, detail="Not Found")
     page, per_page = clamp_page(page, per_page,
                                 get_settings().default_page_size, get_settings().max_page_size)
-    total = store.count_documents(conn, "github", repo, ids)
-    rows = store.list_documents(conn, "github", repo, ids, limit=per_page, offset=(page - 1) * per_page)
+    state_filter = state if state != "all" else None
+    total = store.count_documents(conn, "github", repo, ids, state=state_filter)
+    rows = store.list_documents(conn, "github", repo, ids, limit=per_page,
+                                offset=(page - 1) * per_page, state=state_filter)
     # like the real API, /issues returns issues AND PRs (PRs carry a pull_request marker)
     ab = _api_base(request)
     body = [_issue_obj(conn, owner, repo, r, ab) for r in rows]
@@ -234,7 +236,8 @@ async def list_pulls(owner: str, repo: str, request: Request,
     ids = auth.visible_ids(request, caller)
     if store.get_container(conn, "github", repo) is None:
         raise HTTPException(status_code=404, detail="Not Found")
-    prs = [r for r in store.list_documents(conn, "github", repo, ids, limit=10_000)
+    state_filter = state if state != "all" else None
+    prs = [r for r in store.list_documents(conn, "github", repo, ids, limit=10_000, state=state_filter)
            if r["kind"] == "pull_request"]
     page, per_page = clamp_page(page, per_page,
                                 get_settings().default_page_size, get_settings().max_page_size)
