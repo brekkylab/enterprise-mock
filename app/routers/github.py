@@ -353,7 +353,7 @@ async def get_blob(owner: str, repo: str, sha: str, request: Request):
         raise HTTPException(status_code=404, detail="Not Found")
     content = row["content"]
     ab = _api_base(request)
-    return {"sha": sha, "node_id": synth.node_id("Blob", sha[:12]), "size": len(content),
+    return {"sha": sha, "node_id": synth.node_id("Blob", sha[:12]), "size": len(content.encode()),
             "encoding": "base64", "content": base64.b64encode(content.encode()).decode(),
             "url": f"{ab}/repos/{owner}/{repo}/git/blobs/{sha}"}
 
@@ -491,7 +491,7 @@ def _tree_from_paths(owner: str, repo: str, files, api_base: str = "") -> list[d
         path, content = row["path"], row["content"]
         sha = _blob_sha(content)
         entries[path] = {"path": path, "mode": "100644", "type": "blob", "sha": sha,
-                         "size": len(content),
+                         "size": len(content.encode()),
                          "url": f"{api_base}/repos/{owner}/{repo}/git/blobs/{sha}"}
         parts = path.split("/")[:-1]
         for i in range(1, len(parts) + 1):
@@ -516,7 +516,7 @@ def _file_obj(owner: str, repo: str, row, api_base: str = "") -> dict:
     download_url = f"https://raw.githubusercontent.com/{owner}/{repo}/main/{path}"
     return {"type": "file", "name": name, "path": path,
             "encoding": "base64", "content": base64.b64encode(content.encode()).decode(),
-            "size": len(content), "sha": sha, "node_id": synth.node_id("Blob", sha[:12]),
+            "size": len(content.encode()), "sha": sha, "node_id": synth.node_id("Blob", sha[:12]),
             "url": url, "git_url": git_url, "html_url": html_url, "download_url": download_url,
             "_links": {"self": url, "git": git_url, "html": html_url}}
 

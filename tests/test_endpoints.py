@@ -292,6 +292,20 @@ _GH_FILE_DOCS = [
      "path": "config/secret.yaml", "title": "secret.yaml", "content": "api_key: shh\n",
      "group": "people", "visibility": "group",
      "author_email": "hana@acme.com", "author_groups": ["people"]},
+    # a separate repo (not 'codebase') so this doesn't perturb the exact tree/contents sets the
+    # 'codebase' tests assert against
+    {"source_type": "github", "doc_id": "gh-file-unicode", "repo": "unicode-repo", "subtype": "file",
+     "path": "docs/unicode.md", "title": "unicode.md", "content": "héllo wörld 世界\n",
+     "group": "engineering", "visibility": "public",
+     "author_email": "ava@acme.com", "author_groups": ["engineering"]},
+    # a file doc, deliberately chosen (by brute force over the doc_id) so its synthesized
+    # `number` collides with gh-issue-1's in the SAME repo ('gateway') -- reproduces the
+    # (repo, number) index-shadowing bug: a file's number must never be able to hide a
+    # real issue/PR at that number.
+    {"source_type": "github", "doc_id": "gh-file-collide-88814", "repo": "gateway", "subtype": "file",
+     "path": "src/collide.py", "title": "collide.py", "content": "# unrelated file content\n",
+     "group": "engineering", "visibility": "public",
+     "author_email": "ava@acme.com", "author_groups": ["engineering"]},
 ]
 
 
@@ -448,6 +462,52 @@ def test_github_file_excluded_from_search_issues(gh_client, gh_admin_h):
     body = c.get("/github/search/issues", headers=gh_admin_h, params={"q": "helper"}).json()
     assert body["total_count"] == 0
     assert body["items"] == []
+
+
+def test_github_file_number_index_excludes_files(gh_client, gh_admin_h, gh_org):
+    """`kind='file'` rows must never populate app.state.index["github"] (the (repo, number)
+    reverse index): a file's synthesized number can collide with a real issue/PR's number
+    (see gh-file-collide-88814, which deliberately collides with gh-issue-1's), and if the
+    file's doc_id ends up as the map value, a real issue/PR 404s."""
+    c, _ = gh_client
+    from app import synth
+
+    file_doc_ids = {d["doc_id"] for d in _GH_FILE_DOCS}
+    idx = c.app.state.index["github"]
+    assert not (set(idx.values()) & file_doc_ids)
+
+    # the real issue is still resolvable by number even though a file doc collides with it
+    issue_num = synth.github_number("gh-issue-1")
+    assert synth.github_number("gh-file-collide-88814") == issue_num  # sanity: collision is real
+    r = c.get(f"/github/repos/{gh_org}/gateway/issues/{issue_num}", headers=gh_admin_h)
+    assert r.status_code == 200
+    assert r.json()["title"] == "Rate limiter drops bursts under 50ms"
+
+    pr_num = synth.github_number("gh-pr-1")
+    r2 = c.get(f"/github/repos/{gh_org}/gateway/pulls/{pr_num}", headers=gh_admin_h)
+    assert r2.status_code == 200
+    assert r2.json()["title"] == "Fix token-bucket refill off-by-one"
+
+
+def test_github_size_is_utf8_byte_length(gh_client, gh_admin_h, gh_org):
+    """Real GitHub's `size` is a UTF-8 byte count, not a character count -- must differ for a
+    file whose content has multi-byte characters, across the tree, contents, and blob endpoints."""
+    c, _ = gh_client
+    content = "héllo wörld 世界\n"
+    nbytes = len(content.encode())
+    assert nbytes > len(content)  # sanity: the two would only coincidentally match otherwise
+
+    tree = c.get(f"/github/repos/{gh_org}/unicode-repo/git/trees/main", headers=gh_admin_h,
+                params={"recursive": "1"}).json()
+    entry = next(e for e in tree["tree"] if e["path"] == "docs/unicode.md")
+    assert entry["size"] == nbytes
+
+    body = c.get(f"/github/repos/{gh_org}/unicode-repo/contents/docs/unicode.md", headers=gh_admin_h).json()
+    assert body["size"] == nbytes
+
+    sha = hashlib.sha1(content.encode()).hexdigest()
+    blob = c.get(f"/github/repos/{gh_org}/unicode-repo/git/blobs/{sha}", headers=gh_admin_h).json()
+    assert blob["size"] == nbytes
 
 
 def test_github_file_acl_scoped(gh_client, gh_admin_h, gh_org, gh_user_tokens):

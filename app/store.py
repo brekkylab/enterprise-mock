@@ -230,6 +230,15 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
     # live server is reading rides through the reader's lock instead of a spurious "locked".
     if busy_ms:
         conn.execute(f"PRAGMA busy_timeout={busy_ms}")
+    # Self-heal a github_items table built before the `path` column existed: executescript(SCHEMA)
+    # below runs `CREATE INDEX IF NOT EXISTS idx_github_repo_path ON github_items(repo, path)`, and
+    # IF NOT EXISTS only guards the index name -- it still raises OperationalError if the table
+    # exists but lacks the referenced column. Idempotent: no-op on a fresh DB (table absent) or a
+    # DB that already has the column.
+    try:
+        conn.execute("ALTER TABLE github_items ADD COLUMN path TEXT")
+    except sqlite3.OperationalError:
+        pass  # table absent (fresh DB) or column already present
     conn.executescript(SCHEMA)
     return conn
 

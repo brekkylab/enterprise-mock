@@ -241,6 +241,45 @@ def test_connect_rw_busy_timeout(tmp_path):
         c.close()
 
 
+def test_connect_rw_self_heals_missing_path_column(tmp_path):
+    """A pre-existing github_items table built before the `path` column existed must not make
+    connect_rw's executescript(SCHEMA) blow up on `CREATE INDEX ... ON github_items(repo, path)`
+    (IF NOT EXISTS only guards the index name, not the referenced column)."""
+    p = tmp_path / "old.sqlite"
+    conn = sqlite3.connect(p)
+    conn.execute(
+        "CREATE TABLE github_items ("
+        "doc_id TEXT PRIMARY KEY, repo TEXT NOT NULL, author_email TEXT NOT NULL, "
+        "title TEXT NOT NULL, content TEXT NOT NULL, kind TEXT, state TEXT, labels TEXT, "
+        "assignees TEXT, merged_at TEXT, head_ref TEXT, base_ref TEXT, reviews TEXT, "
+        "reactions TEXT, created_ts INTEGER NOT NULL, updated_ts INTEGER, closed_ts INTEGER, "
+        "closed_by TEXT, merged_by TEXT, milestone TEXT, requested_reviewers TEXT, owner_display TEXT"
+        ")"
+    )
+    conn.execute("INSERT INTO github_items(doc_id, repo, author_email, title, content, created_ts) "
+                "VALUES ('i1', 'svc', 'a@x', 'a bug', '...', 1)")
+    conn.commit()
+    conn.close()
+
+    reconn = store.connect_rw(p)  # must not raise
+    try:
+        cols = {r[1] for r in reconn.execute("PRAGMA table_info(github_items)")}
+        assert "path" in cols
+        # pre-existing row survives the migration
+        assert reconn.execute("SELECT doc_id FROM github_items WHERE doc_id = 'i1'").fetchone()
+    finally:
+        reconn.close()
+
+
+def test_connect_rw_fresh_db_still_works(tmp_path):
+    conn = store.connect_rw(tmp_path / "fresh.sqlite")
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(github_items)")}
+        assert "path" in cols
+    finally:
+        conn.close()
+
+
 def test_connect_ro_tuning(sample_settings):
     # tuned connection applies the pragmas; a plain one keeps sqlite defaults (tests unaffected)
     c = store.connect_ro(sample_settings.db_path, mmap_mb=64, cache_mb=16, temp_memory=True)
