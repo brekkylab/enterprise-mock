@@ -20,8 +20,10 @@ With ``--fuse`` the tree is exposed as an actual filesystem (needs macFUSE/fuse3
 plain ``os``/shell tools; otherwise it's driven in-process via ``ws.execute``.
 """
 import argparse
+import json
 import os
 import subprocess
+import urllib.request
 
 from mirage import MountMode, Workspace
 from mirage.resource.github import GitHubConfig, GitHubResource
@@ -51,12 +53,48 @@ CORPUS = [
 ]
 
 
-def build(mock, token):
+def _api_get(url: str, token: str) -> dict:
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req) as r:
+        return json.load(r)
+
+
+def discover_repo(base_url: str, token: str, org: str = OWNER) -> tuple[str, str] | None:
+    """Find a real repo on the mock that actually has files, instead of assuming the throwaway
+    CORPUS's own ``OWNER``/``REPO`` exists — against a ``--url`` serving a different corpus,
+    ``GitHubResource.__init__`` 404s immediately (it eagerly fetches the repo + its tree).
+
+    Lists the org's repos (the mock echoes back whatever org is asked for — see ``OWNER``) via
+    plain ``urllib`` + the same bearer token the resource will use, then returns the first repo
+    whose recursive git tree contains at least one ``blob`` entry (a repo with only issues/PRs
+    and no files would give the ls/cat walk below nothing to read). Returns ``(owner, repo)``,
+    or ``None`` if nothing qualifies (or the mock can't be reached) — the caller falls back to
+    the throwaway ``CORPUS``'s own ``OWNER``/``REPO`` in that case.
+    """
+    base = f"{base_url.rstrip('/')}/github"
+    try:
+        repos = _api_get(f"{base}/orgs/{org}/repos", token)
+    except Exception:  # noqa: BLE001 — any failure just means "discovery found nothing"
+        return None
+    for r in repos:
+        name = r.get("name")
+        if not name:
+            continue
+        try:
+            tree = _api_get(f"{base}/repos/{org}/{name}/git/trees/main?recursive=1", token)
+        except Exception:  # noqa: BLE001
+            continue
+        if any(entry.get("type") == "blob" for entry in tree.get("tree", [])):
+            return org, name
+    return None
+
+
+def build(mock, token, owner, repo):
     # GitHubConfig has no base_url field — redirect the hardcoded API_BASE constant first, then
     # construct the resource (its __init__ makes synchronous HTTP calls to fetch the default
     # branch and the recursive tree).
     point_github_at(mock.base_url)
-    return GitHubResource(GitHubConfig(token=token, owner=OWNER, repo=REPO, ref="main"))
+    return GitHubResource(GitHubConfig(token=token, owner=owner, repo=repo, ref="main"))
 
 
 async def main(resource) -> None:
@@ -65,12 +103,17 @@ async def main(resource) -> None:
     print("=== ls /github/ ===")
     print((await (await ws.execute("ls /github/")).stdout_str()).rstrip())
 
-    print("\n=== ls /github/src/ ===")
-    print((await (await ws.execute("ls /github/src/")).stdout_str()).rstrip())
+    # Don't assume a fixed layout (e.g. "src/") — a discovered repo's file tree is unknown ahead
+    # of time, so `find` the actual files and read whichever one turns up.
+    files = lines(await (await ws.execute("find /github/ -type f")).stdout_str())
+    print(f"\n=== find /github/ -type f  ({len(files)} file(s)) ===")
+    for f in files[:5]:
+        print(f)
 
-    cat_path = "/github/src/ratelimiter.py"
-    print(f"\n$ cat {cat_path}")
-    print((await (await ws.execute(f'cat "{cat_path}"')).stdout_str()).rstrip())
+    if files:
+        cat_path = files[0]
+        print(f"\n$ cat {cat_path}")
+        print((await (await ws.execute(f'cat "{cat_path}"')).stdout_str()).rstrip()[:600])
 
     print("\n$ grep -r BUG /github/")
     print((await (await ws.execute("grep -r BUG /github/")).stdout_str()).rstrip())
@@ -82,9 +125,15 @@ def main_fuse(resource) -> None:
         with Workspace({"/github": resource}, mode=MountMode.READ) as ws:
             mnt = ws.add_fuse_mount("/github")  # "/github" is now a real directory on disk
             print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
-            path = f"{mnt}/src/ratelimiter.py"
-            print("\n$ head -c 200 src/ratelimiter.py")
-            print("  " + open(path).read(200).replace("\n", " "))  # a genuine open() via FUSE
+            first_file = None
+            for root, _dirs, fnames in os.walk(mnt):
+                if fnames:
+                    first_file = os.path.join(root, fnames[0])
+                    break
+            if first_file:
+                rel = os.path.relpath(first_file, mnt)
+                print(f"\n$ head -c 200 {rel}")
+                print("  " + open(first_file).read(200).replace("\n", " "))  # a genuine open() via FUSE
             count = subprocess.run(["grep", "-rc", "BUG", mnt], capture_output=True, text=True)
             print(f"\n$ grep -rc BUG {mnt}   # a separate process reads the mount → {count.stdout.strip()}")
             print(f"\nexplore it live in another terminal:  ls -R {mnt}")
@@ -106,7 +155,19 @@ if __name__ == "__main__":
     with serve_or_connect(CORPUS, url=args.url) as mock:
         if args.token:
             print("authenticating with --token → responses are ACL-filtered to that user")
-        resource = build(mock, args.token or mock.token)
+        token = args.token or mock.token
+
+        # Discover a repo that actually has files rather than assuming this script's own
+        # CORPUS repo (OWNER/REPO) exists on whatever's behind --url; fall back to it only if
+        # discovery finds nothing (e.g. the local throwaway mock, or a corpus with no files).
+        discovered = discover_repo(mock.base_url, token)
+        owner, repo = discovered if discovered else (OWNER, REPO)
+        if discovered:
+            print(f"discovered repo with files: {owner}/{repo}")
+        else:
+            print(f"no repo with files discovered — falling back to the throwaway corpus's {owner}/{repo}")
+
+        resource = build(mock, token, owner, repo)
         if args.fuse:
             main_fuse(resource)
         else:
