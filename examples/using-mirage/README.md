@@ -7,7 +7,7 @@ agent over a corpus **you** supply, entirely offline.
 
 ```bash
 pip install -e ".[examples,mirage]"
-python examples/using-mirage/slack.py       # or gmail.py, gdrive.py, notion.py, s3.py, unified.py
+python examples/using-mirage/slack.py       # or gmail.py, gdrive.py, notion.py, s3.py, github.py, unified.py
 ```
 
 Each script spins up its own throwaway mock on a tiny in-code corpus, points a mirage
@@ -30,6 +30,7 @@ of driving it in-process (see [FUSE mode](#fuse-mode-fuse) below).
 | `gdrive.py` | `GoogleDriveResource` | `/gdrive` | `ls -F` folders → files; `cat` a native Google doc |
 | `notion.py` | `NotionResource` | `/notion` | `ls` `pages/` + `databases/`; `cat` a `page.json` / `database.json` |
 | `s3.py` | `S3Resource` | `/s3` | `ls` recursively → `cat` an object; `grep -r` across the bucket |
+| `github.py` | `GitHubResource` | `/github` | `ls` a repo's file tree → `cat` a source file; `grep -r` across it |
 | `unified.py` | all three | `/slack` `/gmail` `/gdrive` | one Workspace, one set of commands, three backends |
 
 The scripts navigate **top-down** (`ls` one level, `cat` one file) rather than walking a whole
@@ -37,10 +38,12 @@ mount with `find` / `grep -r`. mirage materializes each directory by calling the
 whole-mount walk over a large corpus (like the live deploy) means thousands of round-trips —
 bounded navigation keeps them fast. `find`/`grep -r` still work; just scope them to a subtree.
 
-**Not included:** Jira / Confluence (mirage has no connector for them) and GitHub (mirage's
-GitHub connector mirrors a repo's *source-file tree* via the git `trees`/`blobs` API, whereas
-the mock's GitHub serves issues/PRs/readme as documents — the models don't line up). Use
-[`examples/using-official-sdk/`](../using-official-sdk/) for those.
+**Not included:** Jira / Confluence (mirage has no connector for them). GitHub *is* included, but
+only its **code** side: mirage's GitHub connector mirrors a repo's file tree via the git
+`trees`/`contents`/`blobs` API — it has no notion of issues/PRs, which the mock also serves as
+GitHub documents. Use `examples/using-mirage/github.py` for the code crawl and
+[`examples/using-official-sdk/github.py`](../using-official-sdk/github.py) for issues/PRs (or
+both, together).
 
 ## Pointing mirage at the mock
 
@@ -83,6 +86,22 @@ mock path, so Docs and Slides don't collide. `_mirage.py` also re-exports `serve
 `google_oauth_user` from
 [`../using-official-sdk/_mockserver.py`](../using-official-sdk/_mockserver.py), so the `--url` /
 `--user` / `--token` flags behave exactly as in those examples.
+
+**GitHub** is the same shape as Google, but with one constant: `GitHubConfig` has no `base_url`
+field, and mirage hardcodes `mirage.core.github._client.API_BASE = "https://api.github.com"`.
+`point_github_at(base_url)` patches that constant (and any already-imported copy) before the
+resource is built:
+
+```python
+from _mirage import point_github_at
+point_github_at(mock.base_url)                       # api.github.com  ->  the mock
+repo = GitHubResource(GitHubConfig(token=T, owner="acme", repo="gateway"))
+```
+
+Unlike Google's constants, nothing else in mirage imports `API_BASE` by value — every consumer
+calls the client's `github_get`/`github_get_sync` functions, which read the module global at call
+time — so the single patch is enough in practice; the copy-sweep is kept for parity with
+`point_google_at` and future-proofing.
 
 ## FUSE mode (`--fuse`)
 
