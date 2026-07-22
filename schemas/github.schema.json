@@ -66,9 +66,15 @@
     "subtype": {
       "enum": [
         "issue",
-        "pull_request"
+        "pull_request",
+        "file"
       ],
-      "description": "Issue vs PR (default: issue)."
+      "description": "Issue vs PR vs file (default: issue)."
+    },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "File path (required for subtype='file')."
     },
     "state": {
       "type": "string",
@@ -221,6 +227,25 @@
     "source_type",
     "content",
     "title"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "subtype": {
+            "const": "file"
+          }
+        },
+        "required": [
+          "subtype"
+        ]
+      },
+      "then": {
+        "required": [
+          "path"
+        ]
+      }
+    }
   ],
   "additionalProperties": false
 }

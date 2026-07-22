@@ -297,6 +297,26 @@ def test_s3_byo_load(tmp_path):
     conn.close()
 
 
+def test_github_file_byo_load(tmp_path, monkeypatch):
+    monkeypatch.setenv("MOCK_DATA_DIR", str(tmp_path)); from app.config import get_settings
+    get_settings.cache_clear(); s = get_settings()
+    p = tmp_path / "c.jsonl"
+    p.write_text(json.dumps({"source_type": "github", "subtype": "file", "repo": "gateway",
+        "path": "src/rl/bucket.go", "title": "bucket.go", "content": "package rl\n",
+        "group": "eng", "visibility": "group", "author_email": "a@acme.com"}))
+    byo.load(p, s, reset=True)
+    conn = store.connect_ro(s.db_path)
+    row = store.get_repo_file(conn, "gateway", "src/rl/bucket.go")
+    assert row is not None and row["kind"] == "file" and row["content"] == "package rl\n"
+    conn.close()
+
+def test_github_file_byo_requires_path(tmp_path):
+    # a file record without `path` must be rejected by schema validation
+    from app.validation import record_errors
+    errs = record_errors({"source_type": "github", "subtype": "file", "title": "x",
+                          "content": "y", "repo": "r"})
+    assert errs  # missing path -> invalid
+
 def test_s3_byo_rejects_missing_key(tmp_path):
     corpus = tmp_path / "bad.jsonl"
     corpus.write_text(json.dumps(

@@ -131,7 +131,7 @@ def _service_columns(src, ex, subtype, parent_id, doc_id, thread_id, seq, org_do
                 "created_ts": created, "updated_ts": updated,
                 "trashed": (1 if ex.get("trashed") else None)}
     if src == "github":
-        return {"kind": subtype or "issue", "state": ex.get("state"),
+        return {"kind": subtype or "issue", "path": ex.get("path"), "state": ex.get("state"),
                 "labels": _j(ex.get("labels")), "assignees": _j(ex.get("assignees")),
                 "merged_at": ex.get("merged_at"), "head_ref": ex.get("head"),
                 "base_ref": ex.get("base"), "reviews": _j(ex.get("reviews")),
@@ -284,7 +284,7 @@ def load(path: Path, settings: Settings | None = None, reset: bool = True) -> di
                   "requested_reviewers", "resolution", "resolutiondate", "duedate",
                   "fix_versions", "versions", "assignee", "reporter", "minor_edit",
                   "version_message", "version_number", "properties", "icon", "cover",
-                  "key", "content_type", "size"):
+                  "key", "content_type", "size", "path"):
             if k in rec:
                 extras[k] = rec[k]
         subtype = rec.get("subtype")
