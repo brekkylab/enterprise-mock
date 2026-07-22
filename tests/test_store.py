@@ -168,11 +168,46 @@ def test_list_s3_objects_prefix_and_order(tmp_path):
                                         "logs/2026/02/a.json", "notes/readme.md"]
 
 
-def test_list_s3_objects_prefix_escapes_like_wildcards(tmp_path):
+def test_list_s3_objects_prefix_no_like_wildcard_semantics(tmp_path):
     conn = _s3_mini_db(tmp_path)
-    # a literal '_' or '%' in the prefix must not act as a SQL LIKE wildcard
+    # the prefix filter is a byte range, not a LIKE pattern: '_'/'%' are ordinary bytes, not
+    # wildcards, so a prefix containing them just fails to match (no escaping needed or done)
     assert store.list_s3_objects(conn, "b", prefix="logs_2026") == []
     assert store.list_s3_objects(conn, "b", prefix="logs%") == []
+
+
+def test_list_s3_objects_prefix_uses_index_range_not_like(tmp_path):
+    """Fix 1 (perf): the prefix filter must compile to an explicit key range on idx_s3_key —
+    NOT a LIKE scan — since SQLite only range-optimizes a LIKE under case_sensitive_like=ON,
+    which this repo must not set (list_drive_by_name needs the default case-insensitive LIKE)."""
+    conn = _s3_mini_db(tmp_path)
+    prefix = "logs/2026/01/"
+    succ = store.key_successor(prefix)
+    plan = conn.execute(
+        "EXPLAIN QUERY PLAN SELECT * FROM s3_objects WHERE bucket = ? AND key >= ? AND key < ? "
+        "ORDER BY key ASC", ("b", prefix, succ)).fetchall()
+    detail = " | ".join(row[-1] for row in plan)
+    assert "idx_s3_key" in detail
+    assert "LIKE" not in detail.upper()
+    flat = detail.replace(" ", "")
+    assert "key>" in flat and "key<" in flat
+
+
+def test_list_s3_objects_prefix_case_sensitive(tmp_path):
+    """Fix 2 (correctness): a direct consequence of the byte-range prefix filter (BINARY
+    collation) — prefix matching is case-SENSITIVE, matching real S3's byte-exact semantics.
+    Objects live only under the lowercase "logs/" prefix; an uppercase "LOGS/" prefix query must
+    not match them (a case-insensitive LIKE would wrongly match)."""
+    conn = store.connect_rw(tmp_path / "s3_case.sqlite")
+    for doc_id, key in [("c1", "logs/a.json"), ("c2", "logs/b.json")]:
+        conn.execute(
+            "INSERT INTO s3_objects(doc_id, bucket, author_email, title, content, key, "
+            "created_ts) VALUES (?,?,?,?,?,?,1)",
+            (doc_id, "b", "a@x.com", key, "body", key))
+    conn.commit()
+    assert [r["key"] for r in store.list_s3_objects(conn, "b", prefix="LOGS/")] == []
+    assert [r["key"] for r in store.list_s3_objects(conn, "b", prefix="logs/")] == \
+        ["logs/a.json", "logs/b.json"]
 
 
 def test_list_s3_objects_keyset_pagination(tmp_path):

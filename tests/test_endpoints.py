@@ -752,6 +752,22 @@ def _s3_big_corpus(n=3000):
         yield {"source_type": "s3", "doc_id": f"s3-big-{i:05d}", "bucket": "big-bucket",
                "group": group, "key": key, "title": key, "content": f"payload-{i}",
                "author_email": author, "author_groups": [group], "visibility": "group"}
+    # A second, dedicated bucket for the CommonPrefixes-straddling regression (Fix 3): one
+    # "folder" (150 objects) bigger than a max-keys=100 page, plus a small trailing folder — the
+    # exact shape that made a rolled-up CommonPrefixes group straddle a page cutoff and get
+    # emitted twice before the fix.
+    for i in range(150):
+        key = f"grp/big/f-{i:04d}.json"
+        yield {"source_type": "s3", "doc_id": f"s3-straddle-big-{i:04d}", "bucket": "straddle-bucket",
+               "group": "engineering", "key": key, "title": key, "content": f"big-payload-{i}",
+               "author_email": "eng-bulk@acme.com", "author_groups": ["engineering"],
+               "visibility": "public"}
+    for i in range(5):
+        key = f"grp/small/f-{i:02d}.json"
+        yield {"source_type": "s3", "doc_id": f"s3-straddle-small-{i:02d}", "bucket": "straddle-bucket",
+               "group": "engineering", "key": key, "title": key, "content": f"small-payload-{i}",
+               "author_email": "eng-bulk@acme.com", "author_groups": ["engineering"],
+               "visibility": "public"}
 
 
 @pytest.fixture(scope="module")
@@ -903,6 +919,57 @@ def test_s3_large_bucket_acl_scopes_listing(big_bucket_client, big_bucket_settin
     assert eng_keys < admin_keys and people_keys < admin_keys      # proper, non-empty subsets
     assert eng_keys.isdisjoint(people_keys)
     assert eng_keys | people_keys == admin_keys
+
+
+def test_s3_delimiter_common_prefix_not_duplicated_across_pages(big_bucket_client, big_bucket_settings):
+    """Fix 3 (correctness): "straddle-bucket" has one 150-object folder ("grp/big/") — bigger
+    than a max-keys=100 page — plus a small trailing folder ("grp/small/"). Before the fix, the
+    "grp/big/" CommonPrefixes group straddled the page cutoff and was emitted on BOTH the page
+    where it started and the page where it resumed. Traverse every page and assert each
+    CommonPrefixes/Content appears exactly once, with no gaps."""
+    pytest.importorskip("botocore")
+    admin = big_bucket_settings.admin_token
+    from urllib.parse import quote
+
+    seen_prefixes: list[str] = []
+    seen_keys: list[str] = []
+    url = "/s3/straddle-bucket?list-type=2&prefix=grp/&delimiter=/&max-keys=100"
+    pages = 0
+    while True:
+        pages += 1
+        assert pages <= 10, "too many pages — pagination isn't converging"
+        r = _s3_get(big_bucket_client, url, admin)
+        assert r.status_code == 200
+        root = ET.fromstring(r.text)
+        seen_prefixes += [cp.findtext(f"{{{S3NS}}}Prefix")
+                          for cp in root.findall(f"{{{S3NS}}}CommonPrefixes")]
+        seen_keys += _s3_keys(root)
+        token = root.findtext(f"{{{S3NS}}}NextContinuationToken")
+        if root.findtext(f"{{{S3NS}}}IsTruncated") != "true":
+            assert token is None
+            break
+        assert token
+        url = f"/s3/straddle-bucket?list-type=2&prefix=grp/&delimiter=/&max-keys=100&continuation-token={quote(token)}"
+
+    # every CommonPrefixes appears EXACTLY once across all pages (no dup)...
+    assert seen_prefixes == ["grp/big/", "grp/small/"]
+    # ...and no plain Contents at all — both "folders" fully roll up under the delimiter (no gap)
+    assert seen_keys == []
+
+
+def test_s3_max_keys_zero_returns_empty_page_safely(big_bucket_client, big_bucket_settings):
+    """Fix 4: max-keys=0 must not crash (no indexing into an empty page) and must report
+    IsTruncated based on whether more data exists, with KeyCount 0 and no NextContinuationToken."""
+    pytest.importorskip("botocore")
+    r = _s3_get(big_bucket_client, "/s3/big-bucket?list-type=2&max-keys=0",
+               big_bucket_settings.admin_token)
+    assert r.status_code == 200
+    root = ET.fromstring(r.text)
+    assert root.findtext(f"{{{S3NS}}}KeyCount") == "0"
+    assert root.findall(f"{{{S3NS}}}Contents") == []
+    assert root.findall(f"{{{S3NS}}}CommonPrefixes") == []
+    assert root.findtext(f"{{{S3NS}}}IsTruncated") == "true"          # big-bucket has 3000 objects
+    assert root.findtext(f"{{{S3NS}}}NextContinuationToken") is None
 
 
 def test_atlassian_errors_use_atlassian_envelope(client):
