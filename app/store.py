@@ -310,6 +310,26 @@ def list_documents(conn, source_type, container=None, visible_ids=None, limit=10
     return conn.execute(sql, params).fetchall()
 
 
+def list_s3_objects(conn, bucket, *, prefix="", start_after=None, visible_ids=None,
+                    limit=1000) -> list[sqlite3.Row]:
+    """S3 ListObjectsV2's data-access path: prefix filter, keyset pagination, and ACL scoping,
+    all pushed into SQL and ordered by key — so listing a big bucket costs one indexed range
+    scan per page, not a whole-bucket materialize + Python sort/filter. ``key LIKE prefix||'%'``
+    plus the ``key > start_after`` keyset bound both hit ``idx_s3_key(bucket, key)``: the leading
+    ``bucket = ?`` equality plus an ascending range on ``key`` let SQLite walk the index directly
+    for both the WHERE and the ORDER BY, with no full scan and no separate sort step."""
+    needle = (prefix or "").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    sql = "SELECT * FROM s3_objects WHERE bucket = ? AND key LIKE ? ESCAPE '\\'"
+    params: list = [bucket, f"{needle}%"]
+    if start_after:
+        sql += " AND key > ?"
+        params.append(start_after)
+    clause, cparams = _acl_clause("s3_objects", visible_ids)
+    sql += clause + " ORDER BY key ASC LIMIT ?"
+    params += cparams + [limit]
+    return conn.execute(sql, params).fetchall()
+
+
 def list_drive_folder(conn, folder, visible_ids=None, limit=100, offset=0) -> list[sqlite3.Row]:
     """Non-trashed files directly in a Drive folder — SQL-scoped + SQL-paginated, so listing a
     big folder costs one page of rows per request, not a full-corpus scan on every page."""

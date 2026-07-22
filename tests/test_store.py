@@ -132,6 +132,70 @@ def test_jcol_parses_json_columns(db):
     assert store.jcol(issue, "no_such_col", default=["x"]) == ["x"]
 
 
+# --- S3: SQL-pushed prefix / keyset pagination / ACL scoping --------------------
+
+def _s3_mini_db(tmp_path):
+    """A hand-built DB with two buckets and a handful of objects — enough to exercise
+    prefix/keyset/ACL without going through the full BYO importer."""
+    conn = store.connect_rw(tmp_path / "s3.sqlite")
+    rows = [
+        # (doc_id, bucket, key)
+        ("d1", "b", "logs/2026/01/a.json"),
+        ("d2", "b", "logs/2026/01/b.json"),
+        ("d3", "b", "logs/2026/02/a.json"),
+        ("d4", "b", "notes/readme.md"),
+        ("d5", "other", "logs/2026/01/a.json"),   # same key, different bucket
+    ]
+    for doc_id, bucket, key in rows:
+        conn.execute(
+            "INSERT INTO s3_objects(doc_id, bucket, author_email, title, content, key, "
+            "created_ts) VALUES (?,?,?,?,?,?,1)",
+            (doc_id, bucket, "a@x.com", key, "body", key))
+    # d2 is ACL-restricted to group 'eng'; everything else is unrestricted (no doc_acl row ->
+    # _acl_clause's EXISTS check only bites rows it has an entry for).
+    conn.execute("INSERT INTO doc_acl VALUES ('d2','group','eng')")
+    conn.commit()
+    return conn
+
+
+def test_list_s3_objects_prefix_and_order(tmp_path):
+    conn = _s3_mini_db(tmp_path)
+    rows = store.list_s3_objects(conn, "b", prefix="logs/2026/01/")
+    assert [r["key"] for r in rows] == ["logs/2026/01/a.json", "logs/2026/01/b.json"]
+    # a bucket-only listing stays sorted and scoped to that bucket (d5 in "other" excluded)
+    rows = store.list_s3_objects(conn, "b")
+    assert [r["key"] for r in rows] == ["logs/2026/01/a.json", "logs/2026/01/b.json",
+                                        "logs/2026/02/a.json", "notes/readme.md"]
+
+
+def test_list_s3_objects_prefix_escapes_like_wildcards(tmp_path):
+    conn = _s3_mini_db(tmp_path)
+    # a literal '_' or '%' in the prefix must not act as a SQL LIKE wildcard
+    assert store.list_s3_objects(conn, "b", prefix="logs_2026") == []
+    assert store.list_s3_objects(conn, "b", prefix="logs%") == []
+
+
+def test_list_s3_objects_keyset_pagination(tmp_path):
+    conn = _s3_mini_db(tmp_path)
+    page1 = store.list_s3_objects(conn, "b", limit=2)
+    assert [r["key"] for r in page1] == ["logs/2026/01/a.json", "logs/2026/01/b.json"]
+    page2 = store.list_s3_objects(conn, "b", start_after=page1[-1]["key"], limit=2)
+    assert [r["key"] for r in page2] == ["logs/2026/02/a.json", "notes/readme.md"]
+    # keyset pagination never re-returns the boundary key, and pages don't overlap
+    assert not {r["key"] for r in page1} & {r["key"] for r in page2}
+
+
+def test_list_s3_objects_acl_scoped(tmp_path):
+    conn = _s3_mini_db(tmp_path)
+    all_keys = {r["key"] for r in store.list_s3_objects(conn, "b", prefix="logs/2026/01/")}
+    assert all_keys == {"logs/2026/01/a.json", "logs/2026/01/b.json"}
+    scoped_keys = {r["key"] for r in
+                  store.list_s3_objects(conn, "b", prefix="logs/2026/01/", visible_ids={"eng"})}
+    assert scoped_keys == {"logs/2026/01/b.json"}          # only d2, granted to group 'eng'
+    none_visible = store.list_s3_objects(conn, "b", prefix="logs/2026/01/", visible_ids={"nobody"})
+    assert none_visible == []
+
+
 # --- connection tuning ----------------------------------------------------------
 
 def test_connect_rw_busy_timeout(tmp_path):

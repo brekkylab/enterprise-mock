@@ -13,12 +13,13 @@ key-prefix convention surfaced via ListObjectsV2's ``delimiter``/``CommonPrefixe
 """
 from __future__ import annotations
 
+import base64
+
 from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, Request, Response
 
 from app import auth, store, synth
-from app.pagination import decode_cursor, encode_cursor
 
 router = APIRouter(prefix="/s3", tags=["s3"])
 # A signed S3 request's canonical path is exact; letting Starlette 307-redirect a bare "/s3" ->
@@ -81,6 +82,23 @@ def _object_row(request: Request, conn, bucket: str, key: str, visible):
     return store.get_document(conn, "s3", doc_id, visible)
 
 
+def _encode_key_token(key: str) -> str:
+    """ListObjectsV2's ``NextContinuationToken`` is opaque on real S3; here it's just the last
+    key of the page, base64'd — a keyset cursor, not an offset, so resuming never re-scans (or
+    re-counts) the rows already returned."""
+    return base64.urlsafe_b64encode(("k:" + key).encode()).decode()
+
+
+def _decode_key_token(token: str) -> str:
+    try:
+        raw = base64.urlsafe_b64decode(token.encode()).decode()
+        if raw.startswith("k:"):
+            return raw[2:]
+    except (ValueError, UnicodeDecodeError):
+        pass
+    return ""
+
+
 # --------------------------------------------------------------------------- endpoints
 
 @router.get("")
@@ -130,20 +148,42 @@ def _list_objects_v2(request: Request, conn, bucket: str, visible) -> Response:
     q = request.query_params
     prefix = q.get("prefix", "")
     delimiter = q.get("delimiter", "")
+    start_after = q.get("start-after", "")
     try:
         max_keys = min(int(q.get("max-keys", _MAX_KEYS)), _MAX_KEYS)
     except ValueError:
         return _error("InvalidArgument", "max-keys must be an integer")
-    start = decode_cursor(q.get("continuation-token"))
 
-    rows = store.list_documents(conn, "s3", container=bucket, visible_ids=visible, limit=100_000)
-    keys = sorted(r["key"] for r in rows if r["key"].startswith(prefix))
+    # A continuation-token (opaque, from a previous page) wins over start-after, exactly like
+    # real S3 — start-after only seeds the very first page of a listing.
+    continuation = q.get("continuation-token")
+    after = _decode_key_token(continuation) if continuation else start_after
+
+    # The one SQL query that replaces the old 100k-row materialize: prefix + keyset (`key >
+    # after`) + ACL all pushed down, walking idx_s3_key(bucket, key) directly in sorted order.
+    # Ask for one extra row so IsTruncated is a plain length check, no separate COUNT(*) query.
+    rows = store.list_s3_objects(conn, bucket, prefix=prefix, start_after=after,
+                                 visible_ids=visible, limit=max_keys + 1)
+    is_truncated = len(rows) > max_keys
+    rows = rows[:max_keys]
     by_key = {r["key"]: r for r in rows}
 
-    # Split into (CommonPrefixes, Contents) using the delimiter, S3-style.
-    contents_keys, common_prefixes = [], []
+    # Split into (CommonPrefixes, Contents) using the delimiter, S3-style. `rows` is already
+    # key-ascending (straight off idx_s3_key), so a first-seen dedup below reproduces the final
+    # sorted order for free — no second sort.
+    #
+    # Bounded rollup: CommonPrefixes are computed only over THIS page (<= max_keys+1 raw rows),
+    # never the whole bucket/prefix. Real S3 can afford to enumerate every CommonPrefixes for a
+    # huge delimited listing in one response because it skips whole key ranges internally without
+    # reading every key under them; a plain SQL range scan can't do that skip, so if one "folder"
+    # here holds more keys than fit in a page, sibling folders past this page's raw cursor show up
+    # on a later page instead of this one. NextContinuationToken always advances by the last *raw*
+    # key fetched, never by a rolled-up prefix, so keyset pagination stays correct across pages
+    # regardless of how the delimiter groups any single page.
+    entries: list[tuple[str, str]] = []
     seen_prefix: set[str] = set()
-    for k in keys:
+    for r in rows:
+        k = r["key"]
         if delimiter:
             rest = k[len(prefix):]
             idx = rest.find(delimiter)
@@ -151,24 +191,23 @@ def _list_objects_v2(request: Request, conn, bucket: str, visible) -> Response:
                 cp = prefix + rest[:idx + len(delimiter)]
                 if cp not in seen_prefix:
                     seen_prefix.add(cp)
-                    common_prefixes.append(cp)
+                    entries.append(("cp", cp))
                 continue
-        contents_keys.append(k)
+        entries.append(("obj", k))
 
-    combined = [("cp", cp) for cp in common_prefixes] + [("obj", k) for k in contents_keys]
-    combined.sort(key=lambda t: t[1])
-    page = combined[start:start + max_keys]
-    is_truncated = start + max_keys < len(combined)
-    next_token = encode_cursor(start + max_keys) if is_truncated else None
+    next_token = _encode_key_token(rows[-1]["key"]) if (is_truncated and rows) else None
 
     body = [f'<ListBucketResult xmlns="{NS}"><Name>{escape(bucket)}</Name>',
             f'<Prefix>{escape(prefix)}</Prefix>',
-            f'<KeyCount>{len(page)}</KeyCount><MaxKeys>{max_keys}</MaxKeys>',
+            f'<KeyCount>{len(entries)}</KeyCount><MaxKeys>{max_keys}</MaxKeys>',
             f'<Delimiter>{escape(delimiter)}</Delimiter>' if delimiter else '',
+            f'<StartAfter>{escape(start_after)}</StartAfter>' if start_after else '',
             f'<IsTruncated>{"true" if is_truncated else "false"}</IsTruncated>']
+    if continuation:
+        body.append(f'<ContinuationToken>{escape(continuation)}</ContinuationToken>')
     if next_token:
         body.append(f'<NextContinuationToken>{next_token}</NextContinuationToken>')
-    for kind, val in page:
+    for kind, val in entries:
         if kind == "cp":
             body.append(f'<CommonPrefixes><Prefix>{escape(val)}</Prefix></CommonPrefixes>')
         else:
