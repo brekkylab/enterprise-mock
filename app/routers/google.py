@@ -263,12 +263,14 @@ async def gmail_label_get(user_id: str, label_id: str, request: Request):
 
 _GMAIL_OP = re.compile(r'(\w+):("[^"]*"|\S+)')
 # operators we honor; anything else stays as free text
-_GMAIL_KEYS = {"from", "to", "subject", "after", "before", "label", "has"}
+_GMAIL_KEYS = {"from", "to", "subject", "after", "before", "label", "has",
+               "newer_than", "older_than"}
 
 
 def _parse_gmail_q(q: str) -> tuple[str, dict]:
     """Split a Gmail search `q` into (free_text, operators). Honors from:/to:/subject:/
-    after:/before:/label:/has: — the rest is free text matched full-text."""
+    after:/before:/newer_than:/older_than:/label:/has: — the rest is free text matched
+    full-text."""
     ops: dict[str, list[str]] = {}
 
     def _take(m):
@@ -293,6 +295,39 @@ def _gmail_date(v: str) -> int | None:
         return int(v)  # epoch seconds
     except ValueError:
         return None
+
+
+# Gmail relative-age units for newer_than:/older_than:. Real Gmail counts calendar months/years,
+# which we can't reproduce without the query's wall-clock calendar; days-per-unit is a faithful-
+# enough approximation for a mock (the operators are otherwise honored exactly).
+_GMAIL_REL_UNIT = {"d": 1, "m": 30, "y": 365}
+_GMAIL_REL = re.compile(r"(\d+)([dmy])")
+
+
+def _gmail_rel_secs(v: str) -> int | None:
+    """Seconds for a Gmail relative-age token like ``5d`` / ``2m`` / ``1y`` (newer_than:/older_than:).
+    None if it isn't a recognized relative token, so callers can ignore it rather than zero out."""
+    m = _GMAIL_REL.fullmatch(v.strip().lower())
+    return int(m.group(1)) * _GMAIL_REL_UNIT[m.group(2)] * 86400 if m else None
+
+
+def _resolve_relative_dates(ops: dict) -> dict:
+    """Fold Gmail's relative-age operators into the absolute after:/before: bounds the rest of the
+    pipeline already understands (SQL range push-down + `_gmail_op_match`), anchored to *now* — so
+    newer_than:5d becomes ``after`` (ts >= now-5d) and older_than:5d becomes ``before`` (ts < now-5d).
+    Returns ``ops`` unchanged when no relative operator is present."""
+    new_secs = [s for v in ops.get("newer_than", []) if (s := _gmail_rel_secs(v)) is not None]
+    old_secs = [s for v in ops.get("older_than", []) if (s := _gmail_rel_secs(v)) is not None]
+    if not new_secs and not old_secs:
+        return ops
+    now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+    ops = {k: list(vs) for k, vs in ops.items()}
+    ops.pop("newer_than", None)
+    ops.pop("older_than", None)
+    # as epoch-second strings: both the SQL push-down and _gmail_op_match parse these via _gmail_date
+    ops.setdefault("after", []).extend(str(now - s) for s in new_secs)
+    ops.setdefault("before", []).extend(str(now - s) for s in old_secs)
+    return ops
 
 
 def _gmail_op_match(row, ops: dict) -> bool:
@@ -326,6 +361,7 @@ def _gmail_query(conn, mailbox, ids, q: str) -> list:
     """Full ACL+mailbox-filtered match set for a Gmail `q` (FTS-ranked when free text is
     present; otherwise the mailbox listing). The caller paginates the returned rows."""
     free, ops = _parse_gmail_q(q)
+    ops = _resolve_relative_dates(ops)  # newer_than:/older_than: -> absolute after:/before: bounds
     if free:
         # Honor a fully "quoted" free-text term as a phrase (Gmail's quote semantics): match the
         # tokens adjacently AND rank docs literally containing the phrase first, so a grep push-down
@@ -398,11 +434,10 @@ async def gmail_attachment(user_id: str, msg_id: str, att_id: str, request: Requ
     row = store.get_document(conn, "gmail", msg_id, visible_ids=ids)
     if row is None:
         raise HTTPException(status_code=404, detail="Not Found")
-    att = next((a for i, a in enumerate(store.jcol(row, "attachments"))
-                if _att_id(msg_id, i) == att_id), None)
-    body = (att or {}).get("content", f"attachment {att_id}")
-    data = _b64url(body)
-    return {"attachmentId": att_id, "size": len(body), "data": data}
+    found = next(((i, a) for i, a in enumerate(store.jcol(row, "attachments"))
+                  if _att_id(msg_id, i) == att_id), None)
+    body = _att_content(msg_id, found[0], found[1]) if found else f"attachment {att_id}"
+    return {"attachmentId": att_id, "size": len(body), "data": _b64url(body)}
 
 
 @router.get("/gmail/v1/users/{user_id}/threads", response_model=GmailThreadList,
@@ -452,6 +487,16 @@ async def gmail_thread_get(user_id: str, thread_id: str, request: Request):
 
 def _att_id(doc_id: str, i: int) -> str:
     return "ANGjdJ" + synth.gmail_id(doc_id, salt=f"att{i}")
+
+
+def _att_content(doc_id: str, i: int, att: dict) -> str:
+    """The exact bytes ``attachments.get`` serves for attachment ``i`` — and, so the two agree,
+    what ``messages.get`` reports as that part's ``body.size``. Real Gmail keeps the part metadata's
+    size equal to the downloaded attachment's byte length (a client can stat from metadata alone);
+    the corpus-declared ``size`` is aspirational and can't be honored with placeholder bytes, so the
+    served content's length is the single source of truth. Falls back to a stable placeholder
+    (keyed by the derived attachmentId) when the corpus carries no ``content``."""
+    return att.get("content", f"attachment {_att_id(doc_id, i)}")
 
 
 def _leaf(mime: str, part_id: str, data: str) -> dict:
@@ -513,10 +558,11 @@ def _gmail_message(row, fmt: str) -> dict:
             f'Content-Type: text/plain; charset="UTF-8"\r\n\r\n{row["content"]}',
             f'Content-Type: text/html; charset="UTF-8"\r\n\r\n{html}',
         ]
-        for att in attachments:
+        for i, att in enumerate(attachments):
             filename = att.get("filename", "attachment.bin")
             mime = att.get("mime", "application/octet-stream")
-            b64 = base64.b64encode(att.get("content", "").encode("utf-8")).decode("ascii")
+            # same bytes attachments.get serves, so raw MIME and the attachment endpoint agree
+            b64 = base64.b64encode(_att_content(row["doc_id"], i, att).encode("utf-8")).decode("ascii")
             leaves.append(
                 f'Content-Type: {mime}; name="{filename}"\r\n'
                 f'Content-Disposition: attachment; filename="{filename}"\r\n'
@@ -542,7 +588,10 @@ def _gmail_message(row, fmt: str) -> dict:
             "filename": att.get("filename", "attachment.bin"),
             "headers": [{"name": "Content-Disposition",
                          "value": f'attachment; filename="{att.get("filename", "attachment.bin")}"'}],
-            "body": {"attachmentId": _att_id(row["doc_id"], i), "size": att.get("size", 1024)},
+            # size = the exact byte length attachments.get serves (see _att_content), so a client can
+            # stat the attachment from this metadata without a second call — real Gmail's contract.
+            "body": {"attachmentId": _att_id(row["doc_id"], i),
+                     "size": len(_att_content(row["doc_id"], i, att))},
         })
     msg["payload"] = {"partId": "", "mimeType": top_mime, "filename": "",
                       "headers": headers, "body": {"size": 0}, "parts": parts}

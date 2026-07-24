@@ -223,6 +223,27 @@ def test_gmail_body_roundtrip(client, admin_h, ro_conn):
     assert subj == doc["title"]
 
 
+def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
+    # Real Gmail's contract: a part's body.size equals the byte length attachments.get serves, so a
+    # client can stat an attachment from message metadata alone. Regression: the part reported the
+    # corpus-declared `size` (e.g. 2048) while attachments.get returned len(content) — a mismatch.
+    row = ro_conn.execute(
+        "SELECT doc_id FROM gmail_messages WHERE attachments IS NOT NULL "
+        "AND attachments != '[]' LIMIT 1").fetchone()
+    if row is None:
+        pytest.skip("no gmail message with an attachment in this subset")
+    m = client.get(f"/gmail/v1/users/me/messages/{row['doc_id']}", headers=admin_h,
+                   params={"format": "full"}).json()
+    parts = [p for p in m["payload"]["parts"] if p.get("body", {}).get("attachmentId")]
+    assert parts, "message should expose at least one attachment part"
+    for p in parts:
+        got = client.get(
+            f"/gmail/v1/users/me/messages/{row['doc_id']}/attachments/{p['body']['attachmentId']}",
+            headers=admin_h).json()
+        assert got["size"] == p["body"]["size"]                       # the two agree
+        assert len(base64.urlsafe_b64decode(got["data"])) == p["body"]["size"]  # ...and match the bytes
+
+
 def test_drive_export_roundtrip(client, admin_h, ro_conn):
     doc = ro_conn.execute("SELECT * FROM gdrive_files LIMIT 1").fetchone()
     text = client.get(f"/drive/v3/files/{doc['doc_id']}/export", headers=admin_h,
@@ -761,7 +782,10 @@ def test_google_batch_dispatches_subrequests(client, admin_h, ro_conn):
         part = MIMENonMultipart("application", "http")
         part["Content-Transfer-Encoding"] = "binary"
         part["Content-ID"] = f"<base + {i}>"  # the format BatchHttpRequest uses
-        part.set_payload(f"GET /gmail/v1/users/me/messages/{mid}?format=minimal HTTP/1.1\r\n\r\n")
+        # format=full is the discriminator: a sub-request whose query is honored returns a payload;
+        # one whose query is dropped defaults to full too, so we assert the OPPOSITE below with
+        # format=minimal — see test_google_batch_honors_subrequest_query_params.
+        part.set_payload(f"GET /gmail/v1/users/me/messages/{mid}?format=full HTTP/1.1\r\n\r\n")
         msg.attach(part)
     fp = StringIO()
     Generator(fp, mangle_from_=False).flatten(msg, unixfrom=False)
@@ -780,6 +804,45 @@ def test_google_batch_dispatches_subrequests(client, admin_h, ro_conn):
         sub = part.get_payload(decode=False)
         assert sub.startswith("HTTP/1.1 200")                  # dispatched with the admin token, not 401
         assert mid in sub                                      # the message JSON came back
+
+
+def _batch_one(client, headers, mid, fmt, uri="/batch"):
+    """POST a one-message Gmail batch to `uri` (default /batch; /batch/gmail/v1 is the real Gmail
+    path) requesting `fmt`, and return the decoded sub-response JSON. Serialized exactly like
+    google-api-python-client's BatchHttpRequest."""
+    from email.generator import Generator
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.nonmultipart import MIMENonMultipart
+    from email.parser import BytesParser
+    from io import StringIO
+
+    msg = MIMEMultipart("mixed")
+    setattr(msg, "_write_headers", lambda self: None)
+    part = MIMENonMultipart("application", "http")
+    part["Content-Transfer-Encoding"] = "binary"
+    part["Content-ID"] = "<b + 0>"
+    part.set_payload(f"GET /gmail/v1/users/me/messages/{mid}?format={fmt} HTTP/1.1\r\n\r\n")
+    msg.attach(part)
+    fp = StringIO()
+    Generator(fp, mangle_from_=False).flatten(msg, unixfrom=False)
+    r = client.post(uri, headers={**headers, "Content-Type": f'multipart/mixed; boundary="{msg.get_boundary()}"'},
+                    content=fp.getvalue())
+    assert r.status_code == 200, r.text
+    parsed = BytesParser().parsebytes(
+        b"Content-Type: " + r.headers["content-type"].encode() + b"\r\n\r\n" + r.content)
+    sub = parsed.get_payload()[0].get_payload(decode=False)
+    return json.loads(sub.split("\r\n\r\n", 1)[1])
+
+
+@pytest.mark.parametrize("uri", ["/batch", "/batch/gmail/v1"])
+def test_google_batch_honors_subrequest_query_params(client, admin_h, uri):
+    # The sub-request's query string must reach the dispatched handler. `format` is the tell: a
+    # dropped query defaults to full, so if the mock ignored it, `format=minimal` would still carry a
+    # payload. A batch-trusting client that caches these would cache bodyless messages otherwise.
+    mid = client.get("/gmail/v1/users/me/messages", headers=admin_h,
+                     params={"maxResults": 1}).json()["messages"][0]["id"]
+    assert "payload" in _batch_one(client, admin_h, mid, "full", uri)     # format=full honored
+    assert "payload" not in _batch_one(client, admin_h, mid, "minimal", uri)  # format=minimal honored
 
 
 def test_slack_replies_resolve_from_a_reply_ts(client, admin_h):
