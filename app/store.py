@@ -719,7 +719,9 @@ def list_gmail_in_range(conn, mailbox, ts_lo, ts_hi, visible_ids=None,
         sql += " AND mailbox = ?"
         params.append(mailbox)
     clause, cparams = _acl_clause("gmail_messages", visible_ids)
-    sql += clause + " ORDER BY created_ts DESC LIMIT ? OFFSET ?"
+    # created_ts DESC = newest-first (real Gmail's messages.list order); doc_id breaks ties into a
+    # stable TOTAL order so keyset-free offset pagination can't dupe/skip rows across pages.
+    sql += clause + " ORDER BY created_ts DESC, doc_id LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
     return conn.execute(sql, params).fetchall()
 

@@ -378,11 +378,10 @@ def _gmail_query(conn, mailbox, ids, q: str) -> list:
         # _gmail_op_match; the remaining ops still filter the (now small) candidate set below.
         lo = max((d for v in ops.get("after", []) if (d := _gmail_date(v)) is not None), default=None)
         hi = min((d for v in ops.get("before", []) if (d := _gmail_date(v)) is not None), default=None)
-        if lo is not None or hi is not None:
-            cand = store.list_gmail_in_range(conn, mailbox, lo, hi, ids, limit=100_000)
-        else:
-            cand = store.list_documents(conn, "gmail", container=mailbox, visible_ids=ids,
-                                        limit=100_000)
+        # list_gmail_in_range for BOTH the date-pinned and the open-ended case (lo=hi=None): its
+        # created_ts DESC, doc_id order is the newest-first listing real Gmail returns — the plain
+        # list_documents path ordered by doc_id (hash), scattering the listing by date.
+        cand = store.list_gmail_in_range(conn, mailbox, lo, hi, ids, limit=100_000)
     return [r for r in cand if _gmail_op_match(r, ops)]
 
 
@@ -401,9 +400,10 @@ async def gmail_messages_list(user_id: str, request: Request):
         total = len(matched)
         rows = matched[offset:offset + limit]
     else:
+        # newest-first by internalDate (created_ts), like real Gmail — NOT doc_id (hash) order, so a
+        # capped "newest N" crawl is deterministic by date, not random. Open-ended range = whole box.
         total = store.count_documents(conn, "gmail", container=mailbox, visible_ids=ids)
-        rows = store.list_documents(conn, "gmail", container=mailbox, visible_ids=ids,
-                                    limit=limit, offset=offset)
+        rows = store.list_gmail_in_range(conn, mailbox, None, None, ids, limit=limit, offset=offset)
     # threadId must agree with messages.get (a reply belongs to its root's thread)
     messages = [{"id": r["doc_id"], "threadId": r["thread_id"] or r["doc_id"]} for r in rows]
     body = {"messages": messages, "resultSizeEstimate": total}

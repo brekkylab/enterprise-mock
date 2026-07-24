@@ -223,6 +223,39 @@ def test_gmail_body_roundtrip(client, admin_h, ro_conn):
     assert subj == doc["title"]
 
 
+def test_gmail_messages_list_ordered_by_internaldate_desc(client, admin_h, ro_conn):
+    # Real Gmail returns messages.list newest-first by internalDate. Regression (#11): the mock
+    # listed by doc_id (hash order), so a capped "newest N" was effectively random by date.
+    listed = client.get("/gmail/v1/users/me/messages", headers=admin_h,
+                        params={"maxResults": 50}).json()["messages"]
+    got = [m["id"] for m in listed]
+    # the stable total order the endpoint must produce: created_ts DESC, doc_id ASC as tie-break
+    expected = [r["doc_id"] for r in ro_conn.execute(
+        "SELECT doc_id FROM gmail_messages ORDER BY created_ts DESC, doc_id LIMIT 50").fetchall()]
+    assert got == expected
+    # ...and internalDate is monotonically non-increasing across the returned page
+    dates = [int(client.get(f"/gmail/v1/users/me/messages/{i}", headers=admin_h,
+                            params={"format": "minimal"}).json()["internalDate"]) for i in got]
+    assert dates == sorted(dates, reverse=True)
+
+
+def test_gmail_messages_list_pagination_stable_and_ordered(client, admin_h, ro_conn):
+    # Paging must be a stable partition of the same date-desc order — no dupes, no skips, and page 2
+    # continues strictly at/under page 1's tail. (Regression guard for the tie-break in ORDER BY.)
+    total = client.get("/gmail/v1/users/me/messages", headers=admin_h,
+                       params={"maxResults": 1}).json()["resultSizeEstimate"]
+    if total < 2:
+        pytest.skip("need >= 2 gmail messages to exercise paging")
+    p1 = client.get("/gmail/v1/users/me/messages", headers=admin_h, params={"maxResults": 1}).json()
+    p2 = client.get("/gmail/v1/users/me/messages", headers=admin_h,
+                    params={"maxResults": 1, "pageToken": p1["nextPageToken"]}).json()
+    a, b = p1["messages"][0]["id"], p2["messages"][0]["id"]
+    assert a != b                                                     # distinct rows, no repeat
+    both = client.get("/gmail/v1/users/me/messages", headers=admin_h,
+                      params={"maxResults": 2}).json()["messages"]
+    assert [m["id"] for m in both] == [a, b]                          # pages concatenate in order
+
+
 def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
     # Real Gmail's contract: a part's body.size equals the byte length attachments.get serves, so a
     # client can stat an attachment from message metadata alone. Regression: the part reported the
