@@ -155,6 +155,31 @@ def test_gmail_q_parse_and_match():
     assert ops["has"] == ["attachment"]
 
 
+def test_gmail_relative_date_parse():
+    # newer_than:/older_than: are operators (relative age), NOT free text — so they neither leak
+    # into the FTS term nor drop the real free-text term beside them.
+    from app.routers.google import _parse_gmail_q, _gmail_rel_secs
+    free, ops = _parse_gmail_q("quarterly newer_than:5d older_than:1y")
+    assert free == "quarterly"
+    assert ops["newer_than"] == ["5d"] and ops["older_than"] == ["1y"]
+    assert _gmail_rel_secs("2d") == 2 * 86400
+    assert _gmail_rel_secs("3m") == 3 * 30 * 86400
+    assert _gmail_rel_secs("1y") == 365 * 86400
+    assert _gmail_rel_secs("bogus") is None
+
+
+def test_gmail_relative_date_query_not_zeroed(db):
+    # Regression: newer_than:/older_than: used to fall through as free text, FTS-match nothing, and
+    # zero out ANY relative-date query. They must filter by age (anchored to now) like real Gmail.
+    from app.routers.google import _gmail_query
+    total = len(_gmail_query(db, None, None, ""))  # whole (admin-visible) mailbox
+    assert total > 0
+    # a window wide enough to contain every message == the full set (parsed + honored, not zeroed)
+    assert len(_gmail_query(db, None, None, "newer_than:3650000d")) == total
+    # "older than ~10000 years ago" excludes everything, but is a real filter — not a parse failure
+    assert len(_gmail_query(db, None, None, "older_than:3650000d")) == 0
+
+
 def test_github_issue_q_parse():
     from app.routers.github import _parse_issue_q
     free, quals = _parse_issue_q('repo:acme/gateway is:pr state:closed refill bug')
