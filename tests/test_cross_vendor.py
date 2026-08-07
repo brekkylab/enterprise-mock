@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.config import Settings
-from tests._helpers import crawl_confluence, db_count
+from backlot.config import Settings
+from tests._helpers import build_corpus, client_for, crawl_confluence, db_count
 
 
 def test_unauthenticated_request_reports_the_vendors_own_401_detail(client):
@@ -40,7 +40,7 @@ def test_user_sees_subset_of_admin(client, admin_h, tokens_yaml, ro_conn, sample
     user_conf = len(crawl_confluence(client, uh))
     assert user_conf < admin_conf  # some confluence docs are group/private-restricted
     # matches exactly the ACL-computed visible count
-    from app.acl import Acl
+    from backlot.acl import Acl
 
     acl = Acl.load(
         sample_settings.tokens_path, sample_settings.admin_token, sample_settings.org_name
@@ -51,7 +51,7 @@ def test_user_sees_subset_of_admin(client, admin_h, tokens_yaml, ro_conn, sample
 
 def test_mock_users_directory(client, tokens_yaml, org):
     # the /_mock/users directory lists every user + token (for testing per-user ACL)
-    from app import synth
+    from backlot import synth
 
     body = client.get("/_mock/users").json()
     assert body["admin_token"] == tokens_yaml["admin_token"]
@@ -79,7 +79,7 @@ def test_mock_users_directory(client, tokens_yaml, org):
 
 
 def test_mock_users_can_be_disabled(client, monkeypatch):
-    from app import main
+    from backlot import main
 
     monkeypatch.setattr(main, "get_settings", lambda: Settings(expose_tokens=False))
     assert client.get("/_mock/users").status_code == 404
@@ -139,3 +139,68 @@ def test_mock_openapi_spec_endpoint(client):
     )
     assert client.get("/_mock/openapi/s3").status_code == 404  # SigV4 — intentionally no bridge
     assert client.get("/_mock/openapi/nope").status_code == 404
+
+
+# --- /health: source_documents beside documents ---------------------------------------------
+
+
+def _join_warm_thread(main_module) -> None:
+    """Wait for the background per-source COUNT(*) cache (see lifespan._warm_caches) to land,
+    deterministically — /health's `documents`/`by_source` are None/{} until it does, and a
+    fresh-process cold start loses that race against an immediate request 100% of the time (no
+    poll budget is safe on a slower CI runner), so the test has to join the thread, not wait on it."""
+    warm = main_module.app.state.warm_thread
+    warm.join(timeout=10)
+    assert not warm.is_alive(), "cache warm-up did not finish within 10s"
+
+
+def test_health_reports_both_counts(tmp_path):
+    """Both numbers, always: the row count alone reads as inflated."""
+    from backlot import main as main_module
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "incidents",
+                "author_email": "bob@acme.com",
+                "content": "Anyone seeing 502s?",
+                "replies": [{"content": "Looking.", "author_email": "ava@acme.com"}],
+            },
+        ],
+    )
+    with client_for(settings, reload=True) as client:
+        _join_warm_thread(main_module)
+        body = client.get("/health").json()
+    assert body["status"] == "ok"
+    assert body["source_documents"] == 1
+    assert body["documents"] == 2
+
+
+def test_health_source_documents_is_null_without_the_meta_key(tmp_path):
+    """A DB built before the meta table must still answer /health."""
+    from backlot import main as main_module
+    from backlot import store
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "confluence",
+                "space": "h",
+                "title": "A",
+                "content": "a",
+                "author_email": "ava@acme.com",
+            },
+        ],
+    )
+    conn = store.connect_rw(settings.db_path)
+    conn.execute("DELETE FROM meta WHERE key = 'source_documents'")
+    conn.commit()
+    conn.close()
+    with client_for(settings, reload=True) as client:
+        _join_warm_thread(main_module)
+        body = client.get("/health").json()
+    assert body["source_documents"] is None
+    assert body["documents"] == 1
